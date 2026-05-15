@@ -1,0 +1,31 @@
+apiVersion: greencosts.hstr.nl/v1alpha1
+kind: EnergyPriceSource
+metadata:
+  labels:
+    app.kubernetes.io/name: kube-greencosts
+    app.kubernetes.io/managed-by: kustomize
+  name: energypricesource-enever
+spec:
+  provider: enever
+  biddingZone: NL
+  currency: EUR
+  # Refresh prices every hour; cron fires at minute 0.
+  refreshSchedule: "0 * * * *"
+  # Keep cached prices valid for 55 minutes so there is a small overlap
+  # before the next scheduled fetch.
+  cacheTTL: 55m
+  eneverConfig:
+    tokenRef:
+      name: enever-token   # kubectl create secret generic enever-token --from-literal=token=<YOUR_TOKEN>
+      key: token
+    # Optional: omit supplier to use the raw EPEX spot price ("prijs").
+    # Uncomment and set to one of: AA AIP ANWB BE EE EN EVO EZ FR GSL MDE NE TI VDB VON WE ZG ZP
+    # supplier: ANWB
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: enever-token
+type: Opaque
+stringData:
+  token: "<token here>"

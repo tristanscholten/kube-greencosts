@@ -44,6 +44,8 @@ import (
 	"github.com/tristanscholten/kube-greencosts/internal/metrics"
 	"github.com/tristanscholten/kube-greencosts/internal/providers"
 	"github.com/tristanscholten/kube-greencosts/internal/providers/custom"
+	"github.com/tristanscholten/kube-greencosts/internal/providers/enever"
+	"github.com/tristanscholten/kube-greencosts/internal/providers/entsoe"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -212,7 +214,9 @@ func main() {
 
 	// ── Provider registry ─────────────────────────────────────────────────────
 	providerRegistry := providers.NewRegistry()
-	providerRegistry.Register(custom.ProviderName, custom.Factory(""))
+	providerRegistry.Register(custom.ProviderName, custom.Factory())
+	providerRegistry.Register(entsoe.ProviderName, entsoe.Factory())
+	providerRegistry.Register(enever.ProviderName, enever.Factory())
 
 	// ── Metrics client (metrics-server + optional Prometheus) ─────────────────
 	restCfg, err := rest.InClusterConfig()

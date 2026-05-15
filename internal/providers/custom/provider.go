@@ -78,18 +78,18 @@ func New(url, bearerToken string) *Provider {
 }
 
 // Factory returns a providers.ProviderFactory suitable for use with the
-// Registry. It does NOT resolve the Secret; pass the already-resolved token.
-// When used from the controller the token should be fetched via the k8s client
-// before calling Registry.Get.
-func Factory(bearerToken string) providers.ProviderFactory {
-	return func(cfg *greencostsv1alpha1.CustomProviderConfig) (providers.EnergyProvider, error) {
+// Registry. The token is passed at call time by the controller (already
+// resolved from the referenced Secret).
+func Factory() providers.ProviderFactory {
+	return func(spec greencostsv1alpha1.EnergyPriceSourceSpec, token string) (providers.EnergyProvider, error) {
+		cfg := spec.CustomProviderConfig
 		if cfg == nil {
 			return nil, fmt.Errorf("customProviderConfig is required for provider %q", ProviderName)
 		}
 		if cfg.URL == "" {
 			return nil, fmt.Errorf("customProviderConfig.url must not be empty")
 		}
-		return New(cfg.URL, bearerToken), nil
+		return New(cfg.URL, token), nil
 	}
 }
 

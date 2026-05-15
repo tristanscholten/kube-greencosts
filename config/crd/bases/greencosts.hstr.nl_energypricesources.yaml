@@ -107,10 +107,107 @@ spec:
                 required:
                 - url
                 type: object
+              eneverConfig:
+                description: EneverConfig holds the enever.nl configuration used when
+                  Provider is "enever".
+                properties:
+                  supplier:
+                    description: |-
+                      Supplier selects which supplier's all-in retail tariff to use.
+                      When empty the raw EPEX spot price is used (field "prijs" in the API response).
+                    enum:
+                    - AA
+                    - AIP
+                    - ANWB
+                    - BE
+                    - EE
+                    - EN
+                    - EVO
+                    - EZ
+                    - FR
+                    - GSL
+                    - MDE
+                    - NE
+                    - TI
+                    - VDB
+                    - VON
+                    - WE
+                    - ZG
+                    - ZP
+                    type: string
+                  tokenRef:
+                    description: TokenRef points to the Secret key that holds the
+                      enever.nl API token.
+                    properties:
+                      key:
+                        description: The key of the secret to select from.  Must be
+                          a valid secret key.
+                        type: string
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                      optional:
+                        description: Specify whether the Secret or its key must be
+                          defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                    x-kubernetes-map-type: atomic
+                required:
+                - tokenRef
+                type: object
+              entsoeConfig:
+                description: |-
+                  EntsoeConfig holds the ENTSO-E Transparency Platform configuration used
+                  when Provider is "entsoe".
+                properties:
+                  areaCode:
+                    description: |-
+                      AreaCode is the ENTSO-E EIC domain code for the bidding zone
+                      (e.g. "10YNL----------L" for the Netherlands).
+                      When empty the controller looks up spec.biddingZone in the built-in table.
+                    type: string
+                  securityTokenRef:
+                    description: SecurityTokenRef points to the Secret key that holds
+                      the ENTSO-E security token.
+                    properties:
+                      key:
+                        description: The key of the secret to select from.  Must be
+                          a valid secret key.
+                        type: string
+                      name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                        type: string
+                      optional:
+                        description: Specify whether the Secret or its key must be
+                          defined
+                        type: boolean
+                    required:
+                    - key
+                    type: object
+                    x-kubernetes-map-type: atomic
+                required:
+                - securityTokenRef
+                type: object
               provider:
-                description: Provider is the name of the energy data provider plugin
-                  (e.g. "customProvider").
-                minLength: 1
+                description: Provider identifies the energy data provider plugin.
+                enum:
+                - entsoe
+                - enever
+                - customProvider
                 type: string
               refreshSchedule:
                 description: |-
