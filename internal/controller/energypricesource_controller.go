@@ -88,26 +88,16 @@ func (r *EnergyPriceSourceReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{RequeueAfter: time.Until(nextFire)}, nil
 	}
 
-	// ── Resolve bearer token from Secret (if configured) ─────────────────────
-	bearerToken, err := r.resolveBearerToken(ctx, &eps)
+	// ── Resolve provider token from Secret ───────────────────────────────────
+	token, err := r.resolveToken(ctx, &eps)
 	if err != nil {
 		return r.setErrorCondition(ctx, &eps, err)
 	}
 
 	// ── Fetch prices ──────────────────────────────────────────────────────────
-	provider, err := r.Registry.Get(eps.Spec.Provider, eps.Spec.CustomProviderConfig)
+	provider, err := r.Registry.Get(eps.Spec.Provider, eps.Spec, token)
 	if err != nil {
 		return r.setErrorCondition(ctx, &eps, fmt.Errorf("getting provider %q: %w", eps.Spec.Provider, err))
-	}
-
-	// When using the custom provider, rebuild it with the resolved token.
-	if eps.Spec.Provider == "customProvider" && eps.Spec.CustomProviderConfig != nil {
-		cfgWithToken := *eps.Spec.CustomProviderConfig
-		_ = bearerToken // token already embedded via Factory closure
-		provider, err = r.Registry.Get(eps.Spec.Provider, &cfgWithToken)
-		if err != nil {
-			return r.setErrorCondition(ctx, &eps, err)
-		}
 	}
 
 	prices, err := provider.FetchPrices(ctx, providers.FetchPricesRequest{
@@ -143,28 +133,47 @@ func (r *EnergyPriceSourceReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	return ctrl.Result{RequeueAfter: time.Until(nextCronFire)}, nil
 }
 
-// resolveBearerToken reads the referenced Secret and returns the token value.
-// Returns an empty string when no auth is configured.
-func (r *EnergyPriceSourceReconciler) resolveBearerToken(ctx context.Context, eps *greencostsv1alpha1.EnergyPriceSource) (string, error) {
-	cfg := eps.Spec.CustomProviderConfig
-	if cfg == nil || cfg.AuthSecretRef == nil {
+// resolveToken reads the provider-specific token from the referenced Secret.
+// Returns an empty string when no authentication is configured (customProvider
+// without an authSecretRef).
+func (r *EnergyPriceSourceReconciler) resolveToken(ctx context.Context, eps *greencostsv1alpha1.EnergyPriceSource) (string, error) {
+	switch eps.Spec.Provider {
+	case "customProvider":
+		cfg := eps.Spec.CustomProviderConfig
+		if cfg == nil || cfg.AuthSecretRef == nil {
+			return "", nil
+		}
+		return r.readSecretKey(ctx, eps.Namespace, *cfg.AuthSecretRef)
+	case "entsoe":
+		if eps.Spec.EntsoeConfig == nil {
+			return "", fmt.Errorf("entsoeConfig is required for provider \"entsoe\"")
+		}
+		return r.readSecretKey(ctx, eps.Namespace, eps.Spec.EntsoeConfig.SecurityTokenRef)
+	case "enever":
+		if eps.Spec.EneverConfig == nil {
+			return "", fmt.Errorf("eneverConfig is required for provider \"enever\"")
+		}
+		return r.readSecretKey(ctx, eps.Namespace, eps.Spec.EneverConfig.TokenRef)
+	default:
 		return "", nil
 	}
+}
 
-	ref := cfg.AuthSecretRef
+// readSecretKey retrieves a single key from a Kubernetes Secret.
+func (r *EnergyPriceSourceReconciler) readSecretKey(ctx context.Context, namespace string, ref corev1.SecretKeySelector) (string, error) {
 	var secret corev1.Secret
-	key := types.NamespacedName{Namespace: eps.Namespace, Name: ref.Name}
+	key := types.NamespacedName{Namespace: namespace, Name: ref.Name}
 
 	if err := r.Get(ctx, key, &secret); err != nil {
-		return "", fmt.Errorf("reading auth secret %s: %w", key, err)
+		return "", fmt.Errorf("reading secret %s: %w", key, err)
 	}
 
-	token, ok := secret.Data[ref.Key]
+	value, ok := secret.Data[ref.Key]
 	if !ok {
 		return "", fmt.Errorf("key %q not found in secret %s", ref.Key, key)
 	}
 
-	return string(token), nil
+	return string(value), nil
 }
 
 func (r *EnergyPriceSourceReconciler) setErrorCondition(ctx context.Context, eps *greencostsv1alpha1.EnergyPriceSource, err error) (ctrl.Result, error) {

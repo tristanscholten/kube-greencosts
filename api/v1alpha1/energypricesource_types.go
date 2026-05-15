@@ -33,10 +33,34 @@ type CustomProviderConfig struct {
 	AuthSecretRef *corev1.SecretKeySelector `json:"authSecretRef,omitempty"`
 }
 
+// EntsoeConfig holds the connection details for the ENTSO-E Transparency Platform.
+type EntsoeConfig struct {
+	// SecurityTokenRef points to the Secret key that holds the ENTSO-E security token.
+	SecurityTokenRef corev1.SecretKeySelector `json:"securityTokenRef"`
+
+	// AreaCode is the ENTSO-E EIC domain code for the bidding zone
+	// (e.g. "10YNL----------L" for the Netherlands).
+	// When empty the controller looks up spec.biddingZone in the built-in table.
+	// +optional
+	AreaCode string `json:"areaCode,omitempty"`
+}
+
+// EneverConfig holds the connection details for the enever.nl price API.
+type EneverConfig struct {
+	// TokenRef points to the Secret key that holds the enever.nl API token.
+	TokenRef corev1.SecretKeySelector `json:"tokenRef"`
+
+	// Supplier selects which supplier's all-in retail tariff to use.
+	// When empty the raw EPEX spot price is used (field "prijs" in the API response).
+	// +optional
+	// +kubebuilder:validation:Enum=AA;AIP;ANWB;BE;EE;EN;EVO;EZ;FR;GSL;MDE;NE;TI;VDB;VON;WE;ZG;ZP
+	Supplier string `json:"supplier,omitempty"`
+}
+
 // EnergyPriceSourceSpec defines the desired state of EnergyPriceSource.
 type EnergyPriceSourceSpec struct {
-	// Provider is the name of the energy data provider plugin (e.g. "customProvider").
-	// +kubebuilder:validation:MinLength=1
+	// Provider identifies the energy data provider plugin.
+	// +kubebuilder:validation:Enum=entsoe;enever;customProvider
 	Provider string `json:"provider"`
 
 	// BiddingZone is the market bidding zone (e.g. "NL", "DE-LU").
@@ -61,6 +85,15 @@ type EnergyPriceSourceSpec struct {
 	// Provider is "customProvider".
 	// +optional
 	CustomProviderConfig *CustomProviderConfig `json:"customProviderConfig,omitempty"`
+
+	// EntsoeConfig holds the ENTSO-E Transparency Platform configuration used
+	// when Provider is "entsoe".
+	// +optional
+	EntsoeConfig *EntsoeConfig `json:"entsoeConfig,omitempty"`
+
+	// EneverConfig holds the enever.nl configuration used when Provider is "enever".
+	// +optional
+	EneverConfig *EneverConfig `json:"eneverConfig,omitempty"`
 }
 
 // PriceInterval represents the energy price for a single 30-minute slot.

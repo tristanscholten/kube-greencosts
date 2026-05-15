@@ -42,9 +42,10 @@ type EnergyProvider interface {
 	FetchPrices(ctx context.Context, req FetchPricesRequest) ([]greencostsv1alpha1.PriceInterval, error)
 }
 
-// ProviderFactory is a constructor function that builds an EnergyProvider from
-// the CustomProviderConfig stored on the EnergyPriceSource spec.
-type ProviderFactory func(cfg *greencostsv1alpha1.CustomProviderConfig) (EnergyProvider, error)
+// ProviderFactory is a constructor function that builds an EnergyProvider.
+// It receives the full EnergyPriceSourceSpec so each provider can extract
+// its own config section, and a pre-resolved token string from the controller.
+type ProviderFactory func(spec greencostsv1alpha1.EnergyPriceSourceSpec, token string) (EnergyProvider, error)
 
 // Registry maps provider names to their factory functions.
 type Registry struct {
@@ -63,13 +64,13 @@ func (r *Registry) Register(name string, factory ProviderFactory) {
 
 // Get looks up the provider factory for name and constructs the provider.
 // Returns an error when the name is unknown or the factory itself fails.
-func (r *Registry) Get(name string, cfg *greencostsv1alpha1.CustomProviderConfig) (EnergyProvider, error) {
+func (r *Registry) Get(name string, spec greencostsv1alpha1.EnergyPriceSourceSpec, token string) (EnergyProvider, error) {
 	factory, ok := r.factories[name]
 	if !ok {
 		return nil, fmt.Errorf("unknown energy provider %q: register it before use", name)
 	}
 
-	provider, err := factory(cfg)
+	provider, err := factory(spec, token)
 	if err != nil {
 		return nil, fmt.Errorf("initialising provider %q: %w", name, err)
 	}

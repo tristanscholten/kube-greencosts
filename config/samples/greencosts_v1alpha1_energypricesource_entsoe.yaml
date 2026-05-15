@@ -1,0 +1,31 @@
+apiVersion: greencosts.hstr.nl/v1alpha1
+kind: EnergyPriceSource
+metadata:
+  labels:
+    app.kubernetes.io/name: kube-greencosts
+    app.kubernetes.io/managed-by: kustomize
+  name: energypricesource-entsoe
+spec:
+  provider: entsoe
+  biddingZone: NL
+  currency: EUR
+  # Refresh prices every hour; ENTSO-E publishes next-day prices around 13:00 CET.
+  refreshSchedule: "0 * * * *"
+  # Keep cached prices valid for 55 minutes so there is a small overlap
+  # before the next scheduled fetch.
+  cacheTTL: 55m
+  entsoeConfig:
+    securityTokenRef:
+      name: entsoe-token   # kubectl create secret generic entsoe-token --from-literal=token=<YOUR_TOKEN>
+      key: token
+    # Optional: omit areaCode to use the built-in EIC code for biddingZone.
+    # Set explicitly when using a zone not in the built-in table.
+    # areaCode: "10YNL----------L"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: entsoe-token
+type: Opaque
+stringData:
+  token: "<YOUR_ENTSOE_SECURITY_TOKEN>"
