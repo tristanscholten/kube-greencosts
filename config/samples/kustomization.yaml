@@ -1,0 +1,6 @@
+## Append samples of your project ##
+resources:
+- greencosts_v1alpha1_energypricesource.yaml
+- greencosts_v1alpha1_energyawarecronjob.yaml
+- greencosts_v1alpha1_hibernatepolicy.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

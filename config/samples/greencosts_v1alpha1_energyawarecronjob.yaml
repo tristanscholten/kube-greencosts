@@ -1,0 +1,9 @@
+apiVersion: greencosts.hstr.nl/v1alpha1
+kind: EnergyAwareCronJob
+metadata:
+  labels:
+    app.kubernetes.io/name: kube-greencosts
+    app.kubernetes.io/managed-by: kustomize
+  name: energyawarecronjob-sample
+spec:
+  # TODO(user): Add fields here
