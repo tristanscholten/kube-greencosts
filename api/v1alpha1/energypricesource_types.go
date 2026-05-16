@@ -27,16 +27,16 @@ type CustomProviderConfig struct {
 	// +kubebuilder:validation:Pattern=`^https?://`
 	URL string `json:"url"`
 
-	// AuthSecretRef optionally points to a Secret key whose value is sent as
+	// SecretRef optionally points to a Secret key whose value is sent as
 	// "Authorization: Bearer <token>" on every request.
 	// +optional
-	AuthSecretRef *corev1.SecretKeySelector `json:"authSecretRef,omitempty"`
+	SecretRef *corev1.SecretKeySelector `json:"secretRef,omitempty"`
 }
 
 // EntsoeConfig holds the connection details for the ENTSO-E Transparency Platform.
 type EntsoeConfig struct {
-	// SecurityTokenRef points to the Secret key that holds the ENTSO-E security token.
-	SecurityTokenRef corev1.SecretKeySelector `json:"securityTokenRef"`
+	// SecretRef points to the Secret key that holds the ENTSO-E security token.
+	SecretRef corev1.SecretKeySelector `json:"secretRef"`
 
 	// AreaCode is the ENTSO-E EIC domain code for the bidding zone
 	// (e.g. "10YNL----------L" for the Netherlands).
@@ -47,40 +47,19 @@ type EntsoeConfig struct {
 
 // EneverConfig holds the connection details for the enever.nl price API.
 type EneverConfig struct {
-	// TokenRef points to the Secret key that holds the enever.nl API token.
-	TokenRef corev1.SecretKeySelector `json:"tokenRef"`
+	// SecretRef points to the Secret key that holds the enever.nl API token.
+	SecretRef corev1.SecretKeySelector `json:"secretRef"`
 
 	// Supplier selects which supplier's all-in retail tariff to use.
 	// When empty the raw EPEX spot price is used (field "prijs" in the API response).
 	// +optional
-	// +kubebuilder:validation:Enum=AA;AIP;ANWB;BE;EE;EN;EVO;EZ;FR;GSL;MDE;NE;TI;VDB;VON;WE;ZG;ZP
+	// +kubebuilder:validation:Enum=ANWB;BE;CB;ED;EE;EG;EN;ES;EVO;EZ;FR;GSL;HE;IN;MDE;NE;PE;QU;SS;TI;VDB;VF;VON;WE;ZP
 	Supplier string `json:"supplier,omitempty"`
 }
 
-// EnergyPriceSourceSpec defines the desired state of EnergyPriceSource.
-type EnergyPriceSourceSpec struct {
-	// Provider identifies the energy data provider plugin.
-	// +kubebuilder:validation:Enum=entsoe;enever;customProvider
-	Provider string `json:"provider"`
-
-	// BiddingZone is the market bidding zone (e.g. "NL", "DE-LU").
-	// +kubebuilder:validation:MinLength=1
-	BiddingZone string `json:"biddingZone"`
-
-	// Currency is the ISO 4217 currency code for prices (e.g. "EUR").
-	// +kubebuilder:validation:Pattern=`^[A-Z]{3}$`
-	Currency string `json:"currency"`
-
-	// RefreshSchedule is a standard five-field cron expression that controls
-	// when the controller fetches fresh price data.
-	// +kubebuilder:validation:MinLength=1
-	RefreshSchedule string `json:"refreshSchedule"`
-
-	// CacheTTL is how long fetched prices remain valid before a forced refresh.
-	// +kubebuilder:validation:Type=string
-	// +kubebuilder:validation:Pattern=`^([0-9]+h)?([0-9]+m)?([0-9]+s)?$`
-	CacheTTL metav1.Duration `json:"cacheTTL"`
-
+// ProviderConfig groups the provider-specific configurations for an EnergyPriceSource.
+// Set exactly the sub-field that matches spec.provider.
+type ProviderConfig struct {
 	// CustomProviderConfig holds the endpoint and auth configuration used when
 	// Provider is "customProvider".
 	// +optional
@@ -94,6 +73,34 @@ type EnergyPriceSourceSpec struct {
 	// EneverConfig holds the enever.nl configuration used when Provider is "enever".
 	// +optional
 	EneverConfig *EneverConfig `json:"eneverConfig,omitempty"`
+}
+
+// EnergyPriceSourceSpec defines the desired state of EnergyPriceSource.
+type EnergyPriceSourceSpec struct {
+	// Provider identifies the energy data provider plugin.
+	// +kubebuilder:validation:Enum=entsoe;enever;customProvider
+	Provider string `json:"provider"`
+
+	// BiddingZone is the market bidding zone (e.g. "NL", "DE-LU").
+	// +kubebuilder:validation:MinLength=1
+	BiddingZone string `json:"biddingZone"`
+
+	// RefreshSchedule is a standard five-field cron expression that controls
+	// when the controller fetches fresh price data.
+	// Defaults to "0 0,6,12,18 * * *" (every 6 hours at 00:00, 06:00, 12:00, 18:00 UTC).
+	// +optional
+	// +kubebuilder:default="0 0,6,12,18 * * *"
+	RefreshSchedule string `json:"refreshSchedule,omitempty"`
+
+	// CacheTTL is how long fetched prices remain valid before a forced refresh.
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Pattern=`^([0-9]+h)?([0-9]+m)?([0-9]+s)?$`
+	CacheTTL metav1.Duration `json:"cacheTTL"`
+
+	// Providers groups the provider-specific configurations.
+	// Set exactly the sub-field that matches the value of Provider.
+	// +optional
+	Providers ProviderConfig `json:"providers,omitempty"`
 }
 
 // PriceInterval represents the energy price for a single 30-minute slot.

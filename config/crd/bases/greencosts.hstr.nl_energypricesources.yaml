@@ -63,145 +63,6 @@ spec:
                   a forced refresh.
                 pattern: ^([0-9]+h)?([0-9]+m)?([0-9]+s)?$
                 type: string
-              currency:
-                description: Currency is the ISO 4217 currency code for prices (e.g.
-                  "EUR").
-                pattern: ^[A-Z]{3}$
-                type: string
-              customProviderConfig:
-                description: |-
-                  CustomProviderConfig holds the endpoint and auth configuration used when
-                  Provider is "customProvider".
-                properties:
-                  authSecretRef:
-                    description: |-
-                      AuthSecretRef optionally points to a Secret key whose value is sent as
-                      "Authorization: Bearer <token>" on every request.
-                    properties:
-                      key:
-                        description: The key of the secret to select from.  Must be
-                          a valid secret key.
-                        type: string
-                      name:
-                        default: ""
-                        description: |-
-                          Name of the referent.
-                          This field is effectively required, but due to backwards compatibility is
-                          allowed to be empty. Instances of this type with an empty value here are
-                          almost certainly wrong.
-                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                        type: string
-                      optional:
-                        description: Specify whether the Secret or its key must be
-                          defined
-                        type: boolean
-                    required:
-                    - key
-                    type: object
-                    x-kubernetes-map-type: atomic
-                  url:
-                    description: URL is the full HTTP(S) endpoint that returns price
-                      data.
-                    pattern: ^https?://
-                    type: string
-                required:
-                - url
-                type: object
-              eneverConfig:
-                description: EneverConfig holds the enever.nl configuration used when
-                  Provider is "enever".
-                properties:
-                  supplier:
-                    description: |-
-                      Supplier selects which supplier's all-in retail tariff to use.
-                      When empty the raw EPEX spot price is used (field "prijs" in the API response).
-                    enum:
-                    - AA
-                    - AIP
-                    - ANWB
-                    - BE
-                    - EE
-                    - EN
-                    - EVO
-                    - EZ
-                    - FR
-                    - GSL
-                    - MDE
-                    - NE
-                    - TI
-                    - VDB
-                    - VON
-                    - WE
-                    - ZG
-                    - ZP
-                    type: string
-                  tokenRef:
-                    description: TokenRef points to the Secret key that holds the
-                      enever.nl API token.
-                    properties:
-                      key:
-                        description: The key of the secret to select from.  Must be
-                          a valid secret key.
-                        type: string
-                      name:
-                        default: ""
-                        description: |-
-                          Name of the referent.
-                          This field is effectively required, but due to backwards compatibility is
-                          allowed to be empty. Instances of this type with an empty value here are
-                          almost certainly wrong.
-                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                        type: string
-                      optional:
-                        description: Specify whether the Secret or its key must be
-                          defined
-                        type: boolean
-                    required:
-                    - key
-                    type: object
-                    x-kubernetes-map-type: atomic
-                required:
-                - tokenRef
-                type: object
-              entsoeConfig:
-                description: |-
-                  EntsoeConfig holds the ENTSO-E Transparency Platform configuration used
-                  when Provider is "entsoe".
-                properties:
-                  areaCode:
-                    description: |-
-                      AreaCode is the ENTSO-E EIC domain code for the bidding zone
-                      (e.g. "10YNL----------L" for the Netherlands).
-                      When empty the controller looks up spec.biddingZone in the built-in table.
-                    type: string
-                  securityTokenRef:
-                    description: SecurityTokenRef points to the Secret key that holds
-                      the ENTSO-E security token.
-                    properties:
-                      key:
-                        description: The key of the secret to select from.  Must be
-                          a valid secret key.
-                        type: string
-                      name:
-                        default: ""
-                        description: |-
-                          Name of the referent.
-                          This field is effectively required, but due to backwards compatibility is
-                          allowed to be empty. Instances of this type with an empty value here are
-                          almost certainly wrong.
-                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                        type: string
-                      optional:
-                        description: Specify whether the Secret or its key must be
-                          defined
-                        type: boolean
-                    required:
-                    - key
-                    type: object
-                    x-kubernetes-map-type: atomic
-                required:
-                - securityTokenRef
-                type: object
               provider:
                 description: Provider identifies the energy data provider plugin.
                 enum:
@@ -209,18 +70,164 @@ spec:
                 - enever
                 - customProvider
                 type: string
+              providers:
+                description: |-
+                  Providers groups the provider-specific configurations.
+                  Set exactly the sub-field that matches the value of Provider.
+                properties:
+                  customProviderConfig:
+                    description: |-
+                      CustomProviderConfig holds the endpoint and auth configuration used when
+                      Provider is "customProvider".
+                    properties:
+                      secretRef:
+                        description: |-
+                          SecretRef optionally points to a Secret key whose value is sent as
+                          "Authorization: Bearer <token>" on every request.
+                        properties:
+                          key:
+                            description: The key of the secret to select from.  Must
+                              be a valid secret key.
+                            type: string
+                          name:
+                            default: ""
+                            description: |-
+                              Name of the referent.
+                              This field is effectively required, but due to backwards compatibility is
+                              allowed to be empty. Instances of this type with an empty value here are
+                              almost certainly wrong.
+                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            type: string
+                          optional:
+                            description: Specify whether the Secret or its key must
+                              be defined
+                            type: boolean
+                        required:
+                        - key
+                        type: object
+                        x-kubernetes-map-type: atomic
+                      url:
+                        description: URL is the full HTTP(S) endpoint that returns
+                          price data.
+                        pattern: ^https?://
+                        type: string
+                    required:
+                    - url
+                    type: object
+                  eneverConfig:
+                    description: EneverConfig holds the enever.nl configuration used
+                      when Provider is "enever".
+                    properties:
+                      secretRef:
+                        description: SecretRef points to the Secret key that holds
+                          the enever.nl API token.
+                        properties:
+                          key:
+                            description: The key of the secret to select from.  Must
+                              be a valid secret key.
+                            type: string
+                          name:
+                            default: ""
+                            description: |-
+                              Name of the referent.
+                              This field is effectively required, but due to backwards compatibility is
+                              allowed to be empty. Instances of this type with an empty value here are
+                              almost certainly wrong.
+                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            type: string
+                          optional:
+                            description: Specify whether the Secret or its key must
+                              be defined
+                            type: boolean
+                        required:
+                        - key
+                        type: object
+                        x-kubernetes-map-type: atomic
+                      supplier:
+                        description: |-
+                          Supplier selects which supplier's all-in retail tariff to use.
+                          When empty the raw EPEX spot price is used (field "prijs" in the API response).
+                        enum:
+                        - ANWB
+                        - BE
+                        - CB
+                        - ED
+                        - EE
+                        - EG
+                        - EN
+                        - ES
+                        - EVO
+                        - EZ
+                        - FR
+                        - GSL
+                        - HE
+                        - IN
+                        - MDE
+                        - NE
+                        - PE
+                        - QU
+                        - SS
+                        - TI
+                        - VDB
+                        - VF
+                        - VON
+                        - WE
+                        - ZP
+                        type: string
+                    required:
+                    - secretRef
+                    type: object
+                  entsoeConfig:
+                    description: |-
+                      EntsoeConfig holds the ENTSO-E Transparency Platform configuration used
+                      when Provider is "entsoe".
+                    properties:
+                      areaCode:
+                        description: |-
+                          AreaCode is the ENTSO-E EIC domain code for the bidding zone
+                          (e.g. "10YNL----------L" for the Netherlands).
+                          When empty the controller looks up spec.biddingZone in the built-in table.
+                        type: string
+                      secretRef:
+                        description: SecretRef points to the Secret key that holds
+                          the ENTSO-E security token.
+                        properties:
+                          key:
+                            description: The key of the secret to select from.  Must
+                              be a valid secret key.
+                            type: string
+                          name:
+                            default: ""
+                            description: |-
+                              Name of the referent.
+                              This field is effectively required, but due to backwards compatibility is
+                              allowed to be empty. Instances of this type with an empty value here are
+                              almost certainly wrong.
+                              More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                            type: string
+                          optional:
+                            description: Specify whether the Secret or its key must
+                              be defined
+                            type: boolean
+                        required:
+                        - key
+                        type: object
+                        x-kubernetes-map-type: atomic
+                    required:
+                    - secretRef
+                    type: object
+                type: object
               refreshSchedule:
+                default: 0 0,6,12,18 * * *
                 description: |-
                   RefreshSchedule is a standard five-field cron expression that controls
                   when the controller fetches fresh price data.
-                minLength: 1
+                  Defaults to "0 0,6,12,18 * * *" (every 6 hours at 00:00, 06:00, 12:00, 18:00 UTC).
                 type: string
             required:
             - biddingZone
             - cacheTTL
-            - currency
             - provider
-            - refreshSchedule
             type: object
           status:
             description: EnergyPriceSourceStatus defines the observed state of EnergyPriceSource.

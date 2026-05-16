@@ -8,19 +8,19 @@ metadata:
 spec:
   provider: enever
   biddingZone: NL
-  currency: EUR
-  # Refresh prices every hour; cron fires at minute 0.
-  refreshSchedule: "0 * * * *"
-  # Keep cached prices valid for 55 minutes so there is a small overlap
+  refreshSchedule: "0 0,6,12,18 * * *"
+  # refreshSchedule defaults to "0 0,6,12,18 * * *" (every 6 hours). Override if needed.
+  # Keep cached prices valid for 350 minutes so there is a small overlap
   # before the next scheduled fetch.
-  cacheTTL: 55m
-  eneverConfig:
-    tokenRef:
-      name: enever-token   # kubectl create secret generic enever-token --from-literal=token=<YOUR_TOKEN>
-      key: token
-    # Optional: omit supplier to use the raw EPEX spot price ("prijs").
-    # Uncomment and set to one of: AA AIP ANWB BE EE EN EVO EZ FR GSL MDE NE TI VDB VON WE ZG ZP
-    # supplier: ANWB
+  cacheTTL: 350m
+  providers:
+    eneverConfig:
+      secretRef:
+        name: enever-token   # kubectl create secret generic enever-token --from-literal=token=<YOUR_TOKEN>
+        key: token
+      # Optional: omit supplier to use the raw EPEX spot price ("prijs").
+      # Uncomment and set to one of: ANWB BE CB ED EE EG EN ES EVO EZ FR GSL HE IN MDE NE PE QU SS TI VDB VF VON WE ZP
+      # supplier: ANWB
 ---
 apiVersion: v1
 kind: Secret

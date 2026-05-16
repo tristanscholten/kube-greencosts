@@ -138,7 +138,7 @@ func New(areaCode, token string) *Provider {
 // from the EnergyPriceSourceSpec.
 func Factory() providers.ProviderFactory {
 	return func(spec greencostsv1alpha1.EnergyPriceSourceSpec, token string) (providers.EnergyProvider, error) {
-		cfg := spec.EntsoeConfig
+		cfg := spec.Providers.EntsoeConfig
 		if cfg == nil {
 			return nil, fmt.Errorf("entsoeConfig is required for provider %q", ProviderName)
 		}
@@ -153,7 +153,7 @@ func Factory() providers.ProviderFactory {
 		}
 
 		if token == "" {
-			return nil, fmt.Errorf("security token is empty; check entsoeConfig.securityTokenRef")
+			return nil, fmt.Errorf("security token is empty; check entsoeConfig.secretRef")
 		}
 
 		return New(areaCode, token), nil

@@ -48,17 +48,17 @@ const (
 	// ProviderName is the string used in EnergyPriceSource.spec.provider.
 	ProviderName = "enever"
 
-	baseURL        = "https://enever.nl/api"
-	datumLayout    = "2006-01-02 15:04:05"
+	baseURL        = "https://enever.nl/apiv3"
 	requestTimeout = 30 * time.Second
 	maxBodyBytes   = 1 << 20 // 1 MiB
 )
 
-// knownSuppliers is the set of valid supplier codes accepted by the API.
+// knownSuppliers is the set of valid supplier codes accepted by the v3 API.
 var knownSuppliers = map[string]struct{}{
-	"AA": {}, "AIP": {}, "ANWB": {}, "BE": {}, "EE": {}, "EN": {},
-	"EVO": {}, "EZ": {}, "FR": {}, "GSL": {}, "MDE": {}, "NE": {},
-	"TI": {}, "VDB": {}, "VON": {}, "WE": {}, "ZG": {}, "ZP": {},
+	"ANWB": {}, "BE": {}, "CB": {}, "ED": {}, "EE": {}, "EG": {},
+	"EN": {}, "ES": {}, "EVO": {}, "EZ": {}, "FR": {}, "GSL": {},
+	"HE": {}, "IN": {}, "MDE": {}, "NE": {}, "PE": {}, "QU": {},
+	"SS": {}, "TI": {}, "VDB": {}, "VF": {}, "VON": {}, "WE": {}, "ZP": {},
 }
 
 // apiResponse is the top-level JSON response returned by enever.nl.
@@ -91,13 +91,13 @@ func New(token, supplier string) *Provider {
 // from the EnergyPriceSourceSpec.
 func Factory() providers.ProviderFactory {
 	return func(spec greencostsv1alpha1.EnergyPriceSourceSpec, token string) (providers.EnergyProvider, error) {
-		cfg := spec.EneverConfig
+		cfg := spec.Providers.EneverConfig
 		if cfg == nil {
 			return nil, fmt.Errorf("eneverConfig is required for provider %q", ProviderName)
 		}
 
 		if token == "" {
-			return nil, fmt.Errorf("API token is empty; check eneverConfig.tokenRef")
+			return nil, fmt.Errorf("API token is empty; check eneverConfig.secretRef")
 		}
 
 		supplier := strings.ToUpper(cfg.Supplier)
@@ -112,7 +112,7 @@ func Factory() providers.ProviderFactory {
 }
 
 // FetchPrices fetches today's and tomorrow's hourly prices from enever.nl.
-// Tomorrow's data may not be available yet (published ~13:00 CET); in that
+// Tomorrow's data may not be available yet (published ~14:00 CET); in that
 // case a warning is logged and only today's data is returned.
 func (p *Provider) FetchPrices(ctx context.Context, _ providers.FetchPricesRequest) ([]greencostsv1alpha1.PriceInterval, error) {
 	today, err := p.fetchDay(ctx, "vandaag")
@@ -124,15 +124,20 @@ func (p *Provider) FetchPrices(ctx context.Context, _ providers.FetchPricesReque
 	if err != nil {
 		// Tomorrow's prices are not yet available — log and continue.
 		slog.Warn("enever: tomorrow's prices not yet available", "error", err)
+	} else if len(tomorrow) == 0 {
+		// API returned success but empty data — prices not published yet.
+		slog.Info("enever: tomorrow's prices not yet published (empty response). This is expected if you fetch before ~14:00 CET. Check the enever.nl API directly to confirm.")
 	}
 
-	return append(today, tomorrow...), nil
+	all := append(today, tomorrow...)
+	slog.Info("enever: fetched price intervals", "today", len(today), "tomorrow", len(tomorrow), "total", len(all))
+	return all, nil
 }
 
 // fetchDay fetches prices for a single day. day must be "vandaag" or "morgen".
 func (p *Provider) fetchDay(ctx context.Context, day string) ([]greencostsv1alpha1.PriceInterval, error) {
 	// The enever.nl API requires the token in the URL query string.
-	url := fmt.Sprintf("%s/stroomprijs_%s.php?token=%s", baseURL, day, p.token)
+	url := fmt.Sprintf("%s/stroomprijs_%s.php?token=%s&resolution=15", baseURL, day, p.token)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -185,7 +190,10 @@ func (p *Provider) convertData(data []map[string]string, day string) ([]greencos
 			return nil, fmt.Errorf("%s item %d: missing datum field", day, i)
 		}
 
-		start, err := time.ParseInLocation(datumLayout, datumStr, time.UTC)
+		// v3 API returns times as RFC3339 with Dutch local offset, e.g.
+		// "2025-10-21T16:00:00+02:00". Parse the offset as-is; it already
+		// represents the correct clock time.
+		start, err := time.Parse(time.RFC3339, datumStr)
 		if err != nil {
 			return nil, fmt.Errorf("%s item %d: parsing datum %q: %w", day, i, datumStr, err)
 		}
