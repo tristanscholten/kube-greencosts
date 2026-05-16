@@ -29,7 +29,6 @@ import (
 // FetchPricesRequest carries the parameters for a price fetch operation.
 type FetchPricesRequest struct {
 	BiddingZone string
-	Currency    string
 	// Date is the calendar day for which prices are requested.
 	// Providers should return all 30-minute intervals covering that day.
 	Date time.Time

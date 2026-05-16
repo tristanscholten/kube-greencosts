@@ -240,6 +240,7 @@ func main() {
 	// ── Register controllers ───────────────────────────────────────────────────
 	if err := (&controller.EnergyPriceSourceReconciler{
 		Client:   mgr.GetClient(),
+		Reader:   mgr.GetAPIReader(),
 		Scheme:   mgr.GetScheme(),
 		Registry: providerRegistry,
 	}).SetupWithManager(mgr); err != nil {

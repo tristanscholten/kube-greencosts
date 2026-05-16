@@ -46,6 +46,9 @@ const (
 // EnergyPriceSourceReconciler reconciles a EnergyPriceSource object.
 type EnergyPriceSourceReconciler struct {
 	client.Client
+	// Reader is a non-cached API reader used for Secret lookups.
+	// Using the direct reader avoids requiring cluster-wide list/watch on Secrets.
+	Reader   client.Reader
 	Scheme   *runtime.Scheme
 	Registry *providers.Registry
 }
@@ -77,9 +80,13 @@ func (r *EnergyPriceSourceReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 
 	// ── Cron schedule check ───────────────────────────────────────────────────
-	schedule, err := cron.ParseStandard(eps.Spec.RefreshSchedule)
+	cronExpr := eps.Spec.RefreshSchedule
+	if cronExpr == "" {
+		cronExpr = "0 0,6,12,18 * * *"
+	}
+	schedule, err := cron.ParseStandard(cronExpr)
 	if err != nil {
-		return r.setErrorCondition(ctx, &eps, fmt.Errorf("invalid refreshSchedule %q: %w", eps.Spec.RefreshSchedule, err))
+		return r.setErrorCondition(ctx, &eps, fmt.Errorf("invalid refreshSchedule %q: %w", cronExpr, err))
 	}
 
 	nextFire := schedule.Next(time.Now().Add(-time.Second))
@@ -102,7 +109,6 @@ func (r *EnergyPriceSourceReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	prices, err := provider.FetchPrices(ctx, providers.FetchPricesRequest{
 		BiddingZone: eps.Spec.BiddingZone,
-		Currency:    eps.Spec.Currency,
 		Date:        time.Now(),
 	})
 	if err != nil {
@@ -139,21 +145,21 @@ func (r *EnergyPriceSourceReconciler) Reconcile(ctx context.Context, req ctrl.Re
 func (r *EnergyPriceSourceReconciler) resolveToken(ctx context.Context, eps *greencostsv1alpha1.EnergyPriceSource) (string, error) {
 	switch eps.Spec.Provider {
 	case "customProvider":
-		cfg := eps.Spec.CustomProviderConfig
-		if cfg == nil || cfg.AuthSecretRef == nil {
+		cfg := eps.Spec.Providers.CustomProviderConfig
+		if cfg == nil || cfg.SecretRef == nil {
 			return "", nil
 		}
-		return r.readSecretKey(ctx, eps.Namespace, *cfg.AuthSecretRef)
+		return r.readSecretKey(ctx, eps.Namespace, *cfg.SecretRef)
 	case "entsoe":
-		if eps.Spec.EntsoeConfig == nil {
+		if eps.Spec.Providers.EntsoeConfig == nil {
 			return "", fmt.Errorf("entsoeConfig is required for provider \"entsoe\"")
 		}
-		return r.readSecretKey(ctx, eps.Namespace, eps.Spec.EntsoeConfig.SecurityTokenRef)
+		return r.readSecretKey(ctx, eps.Namespace, eps.Spec.Providers.EntsoeConfig.SecretRef)
 	case "enever":
-		if eps.Spec.EneverConfig == nil {
+		if eps.Spec.Providers.EneverConfig == nil {
 			return "", fmt.Errorf("eneverConfig is required for provider \"enever\"")
 		}
-		return r.readSecretKey(ctx, eps.Namespace, eps.Spec.EneverConfig.TokenRef)
+		return r.readSecretKey(ctx, eps.Namespace, eps.Spec.Providers.EneverConfig.SecretRef)
 	default:
 		return "", nil
 	}
@@ -164,7 +170,7 @@ func (r *EnergyPriceSourceReconciler) readSecretKey(ctx context.Context, namespa
 	var secret corev1.Secret
 	key := types.NamespacedName{Namespace: namespace, Name: ref.Name}
 
-	if err := r.Get(ctx, key, &secret); err != nil {
+	if err := r.Reader.Get(ctx, key, &secret); err != nil {
 		return "", fmt.Errorf("reading secret %s: %w", key, err)
 	}
 

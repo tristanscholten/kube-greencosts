@@ -82,7 +82,7 @@ func New(url, bearerToken string) *Provider {
 // resolved from the referenced Secret).
 func Factory() providers.ProviderFactory {
 	return func(spec greencostsv1alpha1.EnergyPriceSourceSpec, token string) (providers.EnergyProvider, error) {
-		cfg := spec.CustomProviderConfig
+		cfg := spec.Providers.CustomProviderConfig
 		if cfg == nil {
 			return nil, fmt.Errorf("customProviderConfig is required for provider %q", ProviderName)
 		}
@@ -102,7 +102,6 @@ func (p *Provider) FetchPrices(ctx context.Context, req providers.FetchPricesReq
 
 	q := httpReq.URL.Query()
 	q.Set("biddingZone", req.BiddingZone)
-	q.Set("currency", req.Currency)
 	q.Set("date", req.Date.Format(time.DateOnly))
 	httpReq.URL.RawQuery = q.Encode()
 
