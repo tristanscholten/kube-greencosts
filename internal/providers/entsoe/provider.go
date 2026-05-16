@@ -17,7 +17,7 @@ limitations under the License.
 // Package entsoe implements the "entsoe" EnergyProvider plugin.
 //
 // It queries the ENTSO-E Transparency Platform REST API for day-ahead prices
-// (documentType A44) and returns them as hourly PriceIntervals. Each
+// (documentType A44) and returns them as PricePoints. Each
 // reconcile fetches a 48-hour window (today + tomorrow UTC) so that
 // EnergyAwareCronJob always has next-day data available.
 //
@@ -163,7 +163,7 @@ func Factory() providers.ProviderFactory {
 // FetchPrices fetches day-ahead prices for a 48-hour window starting at
 // midnight UTC of the day in req.Date. This ensures next-day prices are
 // available when queried after ~13:00 CET.
-func (p *Provider) FetchPrices(ctx context.Context, req providers.FetchPricesRequest) ([]greencostsv1alpha1.PriceInterval, error) {
+func (p *Provider) FetchPrices(ctx context.Context, req providers.FetchPricesRequest) ([]greencostsv1alpha1.PricePoint, error) {
 	dayStart := req.Date.UTC().Truncate(24 * time.Hour)
 	dayEnd := dayStart.Add(48 * time.Hour)
 
@@ -227,14 +227,14 @@ func parseAcknowledgement(body []byte) string {
 }
 
 // parsePublication parses a Publication_MarketDocument XML body and converts
-// all Points to PriceIntervals.
-func parsePublication(body []byte) ([]greencostsv1alpha1.PriceInterval, error) {
+// all Points to PricePoints.
+func parsePublication(body []byte) ([]greencostsv1alpha1.PricePoint, error) {
 	var doc publicationDocument
 	if err := xml.Unmarshal(body, &doc); err != nil {
 		return nil, fmt.Errorf("parsing ENTSO-E XML: %w", err)
 	}
 
-	var intervals []greencostsv1alpha1.PriceInterval
+	intervals := make([]greencostsv1alpha1.PricePoint, 0)
 
 	for _, ts := range doc.TimeSeries {
 		for _, per := range ts.Periods {
@@ -250,11 +250,9 @@ func parsePublication(body []byte) ([]greencostsv1alpha1.PriceInterval, error) {
 
 			for _, pt := range per.Points {
 				intervalStart := periodStart.Add(time.Duration(pt.Position-1) * resolution)
-				intervalEnd := intervalStart.Add(resolution)
 
-				intervals = append(intervals, greencostsv1alpha1.PriceInterval{
-					Start:     metav1.NewTime(intervalStart),
-					End:       metav1.NewTime(intervalEnd),
+				intervals = append(intervals, greencostsv1alpha1.PricePoint{
+					At:        metav1.NewTime(intervalStart),
 					EurPerMWh: pt.PriceAmount,
 				})
 			}
