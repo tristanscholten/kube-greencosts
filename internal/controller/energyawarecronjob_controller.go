@@ -139,7 +139,7 @@ func (r *EnergyAwareCronJobReconciler) Reconcile(ctx context.Context, req ctrl.R
 // available. Returns an error only when no time can be determined at all.
 func (r *EnergyAwareCronJobReconciler) selectOptimalTime(
 	spec greencostsv1alpha1.EnergyAwareCronJobSpec,
-	prices []greencostsv1alpha1.PriceInterval,
+	prices []greencostsv1alpha1.PricePoint,
 	targetDate time.Time,
 	loc *time.Location,
 ) (time.Time, error) {
@@ -168,21 +168,21 @@ func (r *EnergyAwareCronJobReconciler) selectOptimalTime(
 	}
 
 	best := scoredIntervals(window, spec.SchedulePolicy)
-	return best[0].Start.Time, nil
+	return best[0].At.Time, nil
 }
 
 type scoredInterval struct {
-	greencostsv1alpha1.PriceInterval
+	greencostsv1alpha1.PricePoint
 	score float64
 }
 
-func scoredIntervals(intervals []greencostsv1alpha1.PriceInterval, policy greencostsv1alpha1.SchedulePolicy) []scoredInterval {
+func scoredIntervals(intervals []greencostsv1alpha1.PricePoint, policy greencostsv1alpha1.SchedulePolicy) []scoredInterval {
 	scored := make([]scoredInterval, 0, len(intervals))
 
 	for _, iv := range intervals {
 		score := iv.EurPerMWh * policy.PriceWeight
 
-		hour := iv.Start.Hour()
+		hour := iv.At.Hour()
 		if policy.AvoidPeakHours && hour >= peakHourStart && hour < peakHourEnd {
 			score += peakPenalty
 		}
@@ -191,7 +191,7 @@ func scoredIntervals(intervals []greencostsv1alpha1.PriceInterval, policy greenc
 			score -= negativeBonus
 		}
 
-		scored = append(scored, scoredInterval{PriceInterval: iv, score: score})
+		scored = append(scored, scoredInterval{PricePoint: iv, score: score})
 	}
 
 	sort.Slice(scored, func(i, j int) bool {
@@ -201,11 +201,11 @@ func scoredIntervals(intervals []greencostsv1alpha1.PriceInterval, policy greenc
 	return scored
 }
 
-// filterPricesInWindow returns intervals whose Start falls within [earliest, latest).
-func filterPricesInWindow(prices []greencostsv1alpha1.PriceInterval, earliest, latest time.Time) []greencostsv1alpha1.PriceInterval {
-	var result []greencostsv1alpha1.PriceInterval
+// filterPricesInWindow returns price points whose At falls within [earliest, latest).
+func filterPricesInWindow(prices []greencostsv1alpha1.PricePoint, earliest, latest time.Time) []greencostsv1alpha1.PricePoint {
+	var result []greencostsv1alpha1.PricePoint
 	for _, p := range prices {
-		t := p.Start.Time
+		t := p.At.Time
 		if !t.Before(earliest) && t.Before(latest) {
 			result = append(result, p)
 		}

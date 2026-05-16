@@ -103,13 +103,11 @@ type EnergyPriceSourceSpec struct {
 	Providers ProviderConfig `json:"providers,omitempty"`
 }
 
-// PriceInterval represents the energy price for a single 30-minute slot.
-type PriceInterval struct {
-	// Start is the inclusive beginning of the price interval.
-	Start metav1.Time `json:"start"`
-
-	// End is the exclusive end of the price interval.
-	End metav1.Time `json:"end"`
+// PricePoint represents the energy price at the start of a single time slot.
+// The slot ends at the start of the next PricePoint in the slice.
+type PricePoint struct {
+	// At is the timestamp at which this price takes effect.
+	At metav1.Time `json:"at"`
 
 	// EurPerMWh is the price in EUR per megawatt-hour. Negative values indicate
 	// surplus generation (market pays consumers to consume).
@@ -124,7 +122,7 @@ type EnergyPriceSourceStatus struct {
 
 	// Prices holds the fetched 30-minute price intervals, ordered chronologically.
 	// +optional
-	Prices []PriceInterval `json:"prices,omitempty"`
+	Prices []PricePoint `json:"prices,omitempty"`
 
 	// Conditions reflect the current state of the EnergyPriceSource reconciliation.
 	// +optional

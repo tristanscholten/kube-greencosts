@@ -30,15 +30,15 @@ import (
 type FetchPricesRequest struct {
 	BiddingZone string
 	// Date is the calendar day for which prices are requested.
-	// Providers should return all 30-minute intervals covering that day.
+	// Providers should return all price points covering that day.
 	Date time.Time
 }
 
 // EnergyProvider is the interface that all provider plugins must implement.
 type EnergyProvider interface {
-	// FetchPrices returns the 30-minute price intervals for the given request.
+	// FetchPrices returns the price points for the given request.
 	// The returned slice must be ordered chronologically.
-	FetchPrices(ctx context.Context, req FetchPricesRequest) ([]greencostsv1alpha1.PriceInterval, error)
+	FetchPrices(ctx context.Context, req FetchPricesRequest) ([]greencostsv1alpha1.PricePoint, error)
 }
 
 // ProviderFactory is a constructor function that builds an EnergyProvider.

@@ -16,9 +16,9 @@ limitations under the License.
 
 // Package enever implements the "enever" EnergyProvider plugin.
 //
-// It queries the enever.nl API for today's and tomorrow's hourly electricity
+// It queries the enever.nl API for today's and tomorrow's electricity
 // prices. Prices are returned in EUR/kWh by the API and converted to EUR/MWh
-// (× 1000) to match the PriceInterval convention used by this operator.
+// (× 1000) to match the PricePoint convention used by this operator.
 //
 // The enever.nl API requires the token as a URL query parameter (token=...).
 // This is mandated by the API design.
@@ -111,10 +111,10 @@ func Factory() providers.ProviderFactory {
 	}
 }
 
-// FetchPrices fetches today's and tomorrow's hourly prices from enever.nl.
+// FetchPrices fetches today's and tomorrow's prices from enever.nl.
 // Tomorrow's data may not be available yet (published ~14:00 CET); in that
 // case a warning is logged and only today's data is returned.
-func (p *Provider) FetchPrices(ctx context.Context, _ providers.FetchPricesRequest) ([]greencostsv1alpha1.PriceInterval, error) {
+func (p *Provider) FetchPrices(ctx context.Context, _ providers.FetchPricesRequest) ([]greencostsv1alpha1.PricePoint, error) {
 	today, err := p.fetchDay(ctx, "vandaag")
 	if err != nil {
 		return nil, fmt.Errorf("fetching today's enever prices: %w", err)
@@ -126,16 +126,18 @@ func (p *Provider) FetchPrices(ctx context.Context, _ providers.FetchPricesReque
 		slog.Warn("enever: tomorrow's prices not yet available", "error", err)
 	} else if len(tomorrow) == 0 {
 		// API returned success but empty data — prices not published yet.
-		slog.Info("enever: tomorrow's prices not yet published (empty response). This is expected if you fetch before ~14:00 CET. Check the enever.nl API directly to confirm.")
+		slog.Info("enever: tomorrow's prices not yet published", "note", "expected before ~14:00 CET")
 	}
 
-	all := append(today, tomorrow...)
+	all := make([]greencostsv1alpha1.PricePoint, 0, len(today)+len(tomorrow))
+	all = append(all, today...)
+	all = append(all, tomorrow...)
 	slog.Info("enever: fetched price intervals", "today", len(today), "tomorrow", len(tomorrow), "total", len(all))
 	return all, nil
 }
 
 // fetchDay fetches prices for a single day. day must be "vandaag" or "morgen".
-func (p *Provider) fetchDay(ctx context.Context, day string) ([]greencostsv1alpha1.PriceInterval, error) {
+func (p *Provider) fetchDay(ctx context.Context, day string) ([]greencostsv1alpha1.PricePoint, error) {
 	// The enever.nl API requires the token in the URL query string.
 	url := fmt.Sprintf("%s/stroomprijs_%s.php?token=%s&resolution=15", baseURL, day, p.token)
 
@@ -175,14 +177,14 @@ func (p *Provider) fetchDay(ctx context.Context, day string) ([]greencostsv1alph
 	return p.convertData(ar.Data, day)
 }
 
-// convertData converts the raw data slice to PriceIntervals.
-func (p *Provider) convertData(data []map[string]string, day string) ([]greencostsv1alpha1.PriceInterval, error) {
+// convertData converts the raw data slice to PricePoints.
+func (p *Provider) convertData(data []map[string]string, day string) ([]greencostsv1alpha1.PricePoint, error) {
 	priceKey := "prijs"
 	if p.supplier != "" {
 		priceKey = "prijs" + p.supplier
 	}
 
-	intervals := make([]greencostsv1alpha1.PriceInterval, 0, len(data))
+	intervals := make([]greencostsv1alpha1.PricePoint, 0, len(data))
 
 	for i, item := range data {
 		datumStr, ok := item["datum"]
@@ -208,9 +210,8 @@ func (p *Provider) convertData(data []map[string]string, day string) ([]greencos
 			return nil, fmt.Errorf("%s item %d: parsing price %q: %w", day, i, priceStr, err)
 		}
 
-		intervals = append(intervals, greencostsv1alpha1.PriceInterval{
-			Start:     metav1.NewTime(start),
-			End:       metav1.NewTime(start.Add(time.Hour)),
+		intervals = append(intervals, greencostsv1alpha1.PricePoint{
+			At:        metav1.NewTime(start),
 			EurPerMWh: eurPerKWh * 1000, // convert EUR/kWh → EUR/MWh
 		})
 	}

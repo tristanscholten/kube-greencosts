@@ -18,12 +18,15 @@ limitations under the License.
 //
 // The provider makes a GET request to the URL configured in
 // EnergyPriceSource.spec.customProviderConfig. The endpoint must return a
-// JSON array of 30-minute price objects with the following shape:
+// JSON array of price point objects with the following shape:
 //
 //	[
-//	  {"start":"2026-05-16T00:00:00+02:00","end":"2026-05-16T00:30:00+02:00","eurPerMWh":42.10},
+//	  {"start":"2026-05-16T00:00:00+02:00","eurPerMWh":42.10},
 //	  ...
 //	]
+//
+// Each object's "start" is the timestamp at which that price takes effect.
+// The price is valid until the start of the next object in the array.
 //
 // If authSecretRef is set, the Bearer token read from the referenced Secret is
 // sent as the Authorization header.
@@ -54,7 +57,6 @@ const (
 // apiPriceInterval is the wire representation returned by the external API.
 type apiPriceInterval struct {
 	Start     string  `json:"start"`
-	End       string  `json:"end"`
 	EurPerMWh float64 `json:"eurPerMWh"`
 }
 
@@ -93,8 +95,8 @@ func Factory() providers.ProviderFactory {
 	}
 }
 
-// FetchPrices calls the remote API and returns the 30-minute price intervals.
-func (p *Provider) FetchPrices(ctx context.Context, req providers.FetchPricesRequest) ([]greencostsv1alpha1.PriceInterval, error) {
+// FetchPrices calls the remote API and returns the price points.
+func (p *Provider) FetchPrices(ctx context.Context, req providers.FetchPricesRequest) ([]greencostsv1alpha1.PricePoint, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, p.url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("building request for %q: %w", p.url, err)
@@ -141,8 +143,8 @@ func (p *Provider) FetchPrices(ctx context.Context, req providers.FetchPricesReq
 	return intervals, nil
 }
 
-func convertIntervals(raw []apiPriceInterval) ([]greencostsv1alpha1.PriceInterval, error) {
-	intervals := make([]greencostsv1alpha1.PriceInterval, 0, len(raw))
+func convertIntervals(raw []apiPriceInterval) ([]greencostsv1alpha1.PricePoint, error) {
+	intervals := make([]greencostsv1alpha1.PricePoint, 0, len(raw))
 
 	for i, r := range raw {
 		start, err := time.Parse(time.RFC3339, r.Start)
@@ -150,14 +152,8 @@ func convertIntervals(raw []apiPriceInterval) ([]greencostsv1alpha1.PriceInterva
 			return nil, fmt.Errorf("interval %d: parsing start %q: %w", i, r.Start, err)
 		}
 
-		end, err := time.Parse(time.RFC3339, r.End)
-		if err != nil {
-			return nil, fmt.Errorf("interval %d: parsing end %q: %w", i, r.End, err)
-		}
-
-		intervals = append(intervals, greencostsv1alpha1.PriceInterval{
-			Start:     metav1.NewTime(start),
-			End:       metav1.NewTime(end),
+		intervals = append(intervals, greencostsv1alpha1.PricePoint{
+			At:        metav1.NewTime(start),
 			EurPerMWh: r.EurPerMWh,
 		})
 	}
