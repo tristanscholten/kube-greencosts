@@ -302,11 +302,12 @@ spec:
                 description: Prices holds the fetched 30-minute price intervals, ordered
                   chronologically.
                 items:
-                  description: PriceInterval represents the energy price for a single
-                    30-minute slot.
+                  description: |-
+                    PricePoint represents the energy price at the start of a single time slot.
+                    The slot ends at the start of the next PricePoint in the slice.
                   properties:
-                    end:
-                      description: End is the exclusive end of the price interval.
+                    at:
+                      description: At is the timestamp at which this price takes effect.
                       format: date-time
                       type: string
                     eurPerMWh:
@@ -314,14 +315,9 @@ spec:
                         EurPerMWh is the price in EUR per megawatt-hour. Negative values indicate
                         surplus generation (market pays consumers to consume).
                       type: number
-                    start:
-                      description: Start is the inclusive beginning of the price interval.
-                      format: date-time
-                      type: string
                   required:
-                  - end
+                  - at
                   - eurPerMWh
-                  - start
                   type: object
                 type: array
             type: object
