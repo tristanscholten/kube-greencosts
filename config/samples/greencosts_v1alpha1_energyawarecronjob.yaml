@@ -6,4 +6,26 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: energyawarecronjob-sample
 spec:
-  # TODO(user): Add fields here
+  energyPriceSource:
+    name: energypricesource-enever
+
+  energyStrategy:
+    strategy: LowestPrice
+    estimatedDuration: 2m
+    scheduleWindow: 4h
+
+  cronJob:
+    schedule: "0 0,6,12,18 * * *"
+    timeZone: Europe/Amsterdam
+    concurrencyPolicy: Forbid
+    successfulJobsHistoryLimit: 3
+    failedJobsHistoryLimit: 1
+    jobTemplate:
+      spec:
+        template:
+          spec:
+            containers:
+              - name: ping
+                image: busybox:1.37
+                command: ["sh", "-c", "ping -c 20 1.1.1.1"]
+            restartPolicy: OnFailure

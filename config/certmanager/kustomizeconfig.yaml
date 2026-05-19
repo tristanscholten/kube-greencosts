@@ -1,0 +1,10 @@
+# Teaches kustomize to update cert-manager cross-resource name references.
+# When namePrefix renames the Issuer, this ensures the Certificate's
+# spec.issuerRef.name field is updated to match.
+nameReference:
+- kind: Issuer
+  group: cert-manager.io
+  fieldSpecs:
+  - kind: Certificate
+    group: cert-manager.io
+    path: spec/issuerRef/name

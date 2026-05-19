@@ -1,0 +1,15 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: serving-cert
+  namespace: system
+spec:
+  # dnsNames placeholders: kustomize replacements in config/default/kustomization.yaml
+  # inject the real service name and namespace before applying.
+  dnsNames:
+  - webhook-service.system.svc
+  - webhook-service.system.svc.cluster.local
+  issuerRef:
+    kind: Issuer
+    name: selfsigned-issuer
+  secretName: webhook-server-cert

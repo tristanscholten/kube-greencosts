@@ -20,7 +20,7 @@
 
 kube-greencosts watches real-time electricity spot prices from [ENTSO-E](https://transparency.entsoe.eu) or [enever.nl](https://enever.nl) and uses them to make two decisions automatically:
 
-1. **When to run batch jobs** — `EnergyAwareCronJob` picks the cheapest price window within your allowed time range each day and creates a standard Kubernetes `Job` at that moment.
+1. **When to run batch jobs** — `EnergyAwareCronJob` acts as a drop-in replacement for a Kubernetes `CronJob`, but instead of firing at exactly the scheduled time it picks the cheapest energy price slot within a configurable window after each cron trigger.
 2. **When to hibernate idle namespaces** — `HibernatePolicy` scales idle workloads to zero replicas during off-hours, restoring them before your team's working hours begin.
 
 No code changes needed. Add two YAML files to your cluster and start saving.
@@ -166,7 +166,7 @@ spec:
 | `providers.entsoeConfig` | | Required when `provider: entsoe` |
 | `providers.customProviderConfig` | | Required when `provider: customProvider` |
 
-**Status fields**
+**Status fields** — `EnergyPriceSource`
 
 | Field | Description |
 |---|---|
@@ -174,11 +174,22 @@ spec:
 | `.status.prices[]` | Array of `{start, end, eurPerMWh}` intervals |
 | `.status.conditions[]` | Standard Kubernetes condition array (type `Ready`) |
 
+**Status fields** — `EnergyAwareCronJob`
+
+| Field | Description |
+|---|---|
+| `.status.nextCronWindow` | When the next scheduling window opens (raw cron occurrence). Set immediately on reconcile, before price data is fetched |
+| `.status.nextScheduledTime` | Energy-optimised fire time within the current window. Set once price data has been evaluated |
+| `.status.lastScheduleTime` | When the last Job was created |
+| `.status.lastSuccessfulTime` | When the last Job completed successfully |
+| `.status.active[]` | References to currently running Jobs |
+| `.status.conditions[]` | Standard Kubernetes condition array |
+
 ---
 
 ### EnergyAwareCronJob (`eacj`)
 
-Creates a Kubernetes `Job` at the cheapest price window each day, within a configurable time range.
+Schedules a Kubernetes `Job` at the cheapest energy price slot within a configurable window around each cron fire time. The controller fully implements standard Kubernetes CronJob semantics (`concurrencyPolicy`, `suspend`, `startingDeadlineSeconds`, job history limits, etc.) and adds energy-price optimisation on top.
 
 ```yaml
 apiVersion: greencosts.hstr.nl/v1alpha1
@@ -187,40 +198,43 @@ metadata:
   name: nightly-ml-train
 spec:
   energyPriceSource:
-    name: my-prices
-  earliestStart: "22:00"
-  latestStart:   "06:00"
-  deadline:      "07:00"
-  timeZone: Europe/Amsterdam
-  schedulePolicy:
-    priceWeight: 0.8          # 0–1: how aggressively to chase cheap slots
-    preferNegativePrices: true
-    avoidPeakHours: false
-  fallback:
-    runAt: "02:00"
-    whenPriceDataMissing: true
-  jobTemplate:
-    spec:
-      template:
-        spec:
-          containers:
-            - name: trainer
-              image: my-org/ml-trainer:latest
-          restartPolicy: OnFailure
+    name: energypricesource-enever
+
+  energyStrategy:
+    strategy: LowestPrice
+    estimatedDuration: 2h     # expected run time of the job
+    scheduleWindow: 6h        # how long after the cron trigger the job may run
+
+  cronJob:
+    schedule: "0 22 * * *"   # cron expression — window opens at 22:00 each day
+    timeZone: Europe/Amsterdam
+    concurrencyPolicy: Forbid
+    successfulJobsHistoryLimit: 3
+    failedJobsHistoryLimit: 1
+    jobTemplate:
+      spec:
+        template:
+          spec:
+            containers:
+              - name: trainer
+                image: my-org/ml-trainer:latest
+            restartPolicy: OnFailure
 ```
 
 | Field | Required | Description |
 |---|---|---|
 | `energyPriceSource.name` | ✅ | Name of the `EnergyPriceSource` in the same namespace |
-| `earliestStart` | ✅ | `HH:MM` — earliest the job may start |
-| `latestStart` | ✅ | `HH:MM` — latest the job may start |
-| `deadline` | ✅ | `HH:MM` — hard deadline; job fires here as last resort |
-| `timeZone` | | IANA tz name. Default: `UTC` |
-| `schedulePolicy.priceWeight` | | 0–1 weight for price vs. other factors. Default: `0.5` |
-| `schedulePolicy.preferNegativePrices` | | Bias toward slots where grid pays consumers |
-| `schedulePolicy.avoidPeakHours` | | Penalise slots between 07:00–22:00 |
-| `fallback.runAt` | ✅ | `HH:MM` fallback start time |
-| `fallback.whenPriceDataMissing` | | Enable fallback when no price data |
+| `energyStrategy.strategy` | ✅ | How to pick the slot. `LowestPrice` or `HighestPrice` |
+| `energyStrategy.estimatedDuration` | ✅ | Expected run time of the job (e.g. `2h`, `30m`) — used to find a slot that fits |
+| `energyStrategy.scheduleWindow` | ✅ | How long after the cron trigger the job may run (e.g. `6h`). Must be ≥ `estimatedDuration` |
+| `cronJob.schedule` | ✅ | Standard 5-field cron expression (e.g. `"0 22 * * *"`) |
+| `cronJob.timeZone` | | IANA timezone for the schedule (e.g. `Europe/Amsterdam`). Default: `UTC` |
+| `cronJob.concurrencyPolicy` | | `Allow` / `Forbid` / `Replace`. Default: `Allow` |
+| `cronJob.suspend` | | Set to `true` to pause scheduling |
+| `cronJob.startingDeadlineSeconds` | | Max seconds past schedule to still start the job |
+| `cronJob.successfulJobsHistoryLimit` | | Number of completed jobs to retain. Default: `3` |
+| `cronJob.failedJobsHistoryLimit` | | Number of failed jobs to retain. Default: `1` |
+| `cronJob.jobTemplate` | ✅ | Standard Kubernetes `JobTemplateSpec` |
 
 ---
 

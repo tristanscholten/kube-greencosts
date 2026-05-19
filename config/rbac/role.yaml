@@ -35,6 +35,7 @@ rules:
   - jobs
   verbs:
   - create
+  - delete
   - get
   - list
   - patch

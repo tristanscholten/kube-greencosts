@@ -46,6 +46,7 @@ import (
 	"github.com/tristanscholten/kube-greencosts/internal/providers/custom"
 	"github.com/tristanscholten/kube-greencosts/internal/providers/enever"
 	"github.com/tristanscholten/kube-greencosts/internal/providers/entsoe"
+	greencostswebhook "github.com/tristanscholten/kube-greencosts/internal/webhook"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -260,6 +261,10 @@ func main() {
 		MetricsClient: metricsClient,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "HibernatePolicy")
+		os.Exit(1)
+	}
+	if err := greencostswebhook.SetupEnergyAwareCronJobWebhookWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create webhook", "webhook", "EnergyAwareCronJob")
 		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder

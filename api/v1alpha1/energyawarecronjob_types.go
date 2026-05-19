@@ -22,82 +22,76 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// SchedulePolicy controls how the optimal price window is selected.
-type SchedulePolicy struct {
-	// PriceWeight is a 0–1 multiplier applied to the price score.
-	// Higher values make the controller more aggressive about picking cheap slots.
-	// +kubebuilder:validation:Minimum=0
-	// +kubebuilder:validation:Maximum=1
-	// +kubebuilder:default=0.5
-	PriceWeight float64 `json:"priceWeight"`
+// Strategy defines how the optimal run time is selected within the
+// scheduling window.
+// +kubebuilder:validation:Enum=LowestPrice
+type Strategy string
 
-	// AvoidPeakHours adds a scoring penalty for slots between 07:00 and 22:00.
-	// +optional
-	AvoidPeakHours bool `json:"avoidPeakHours,omitempty"`
+const (
+	// LowestPrice selects the price point with the lowest energy cost in the window.
+	LowestPrice Strategy = "LowestPrice"
+	// HighestPrice selects the price point with the highest energy cost in the window.
+	HighestPrice Strategy = "HighestPrice"
+)
 
-	// PreferNegativePrices biases selection toward slots where eurPerMWh < 0,
-	// where consumers are effectively paid to consume energy.
-	// +optional
-	PreferNegativePrices bool `json:"preferNegativePrices,omitempty"`
-}
+// EnergyStrategySpec configures the energy-price optimisation behaviour.
+type EnergyStrategySpec struct {
+	// Strategy defines how the optimal time slot is selected within the window.
+	// +kubebuilder:default=LowestPrice
+	Strategy Strategy `json:"strategy"`
 
-// FallbackPolicy describes what happens when price data is unavailable.
-type FallbackPolicy struct {
-	// RunAt is the HH:MM time (in spec.timeZone) at which the job runs when no
-	// price data is available and WhenPriceDataMissing is true.
-	// +kubebuilder:validation:Pattern=`^([01][0-9]|2[0-3]):[0-5][0-9]$`
-	RunAt string `json:"runAt"`
+	// EstimatedDuration is the expected run time of the job (e.g. "2h", "30m").
+	// needed to find the cheapest price point within the time window.
+	EstimatedDuration metav1.Duration `json:"estimatedDuration"`
 
-	// WhenPriceDataMissing enables the fallback when the referenced
-	// EnergyPriceSource has no price data for the target date.
-	// +optional
-	WhenPriceDataMissing bool `json:"whenPriceDataMissing,omitempty"`
+	// ScheduleWindow defines how long after the cron occurrence the Job may run.
+	// Example: schedule "0 0 * * *" with scheduleWindow "6h" means the controller
+	// may start the Job between 00:00 and 06:00, as long as the estimated duration
+	// fits inside the window.
+	ScheduleWindow metav1.Duration `json:"scheduleWindow"`
 }
 
 // EnergyAwareCronJobSpec defines the desired state of EnergyAwareCronJob.
 type EnergyAwareCronJobSpec struct {
 	// EnergyPriceSource is the name of the EnergyPriceSource resource in the same
-	// namespace that provides price data.
+	// namespace that provides electricity price data.
 	EnergyPriceSource corev1.LocalObjectReference `json:"energyPriceSource"`
 
-	// Deadline is the hard wall-clock time (HH:MM, spec.timeZone) by which the
-	// job must have started. Used only as a last-resort guard.
-	// +kubebuilder:validation:Pattern=`^([01][0-9]|2[0-3]):[0-5][0-9]$`
-	Deadline string `json:"deadline"`
+	// EnergyStrategy configures the energy-price optimisation strategy and window.
+	EnergyStrategy EnergyStrategySpec `json:"energyStrategy"`
 
-	// EarliestStart is the earliest HH:MM (spec.timeZone) at which the job may start.
-	// +kubebuilder:validation:Pattern=`^([01][0-9]|2[0-3]):[0-5][0-9]$`
-	EarliestStart string `json:"earliestStart"`
-
-	// LatestStart is the latest HH:MM (spec.timeZone) at which the job may start.
-	// +kubebuilder:validation:Pattern=`^([01][0-9]|2[0-3]):[0-5][0-9]$`
-	LatestStart string `json:"latestStart"`
-
-	// TimeZone is the IANA timezone name used when parsing HH:MM fields
-	// (e.g. "Europe/Amsterdam").
-	// +kubebuilder:default="UTC"
-	TimeZone string `json:"timeZone"`
-
-	// SchedulePolicy configures how the cheapest energy slot is selected.
-	SchedulePolicy SchedulePolicy `json:"schedulePolicy"`
-
-	// Fallback defines behaviour when price data is unavailable.
-	Fallback FallbackPolicy `json:"fallback"`
-
-	// JobTemplate is the pod/job specification that is launched at the scheduled time.
-	// This mirrors the standard Kubernetes CronJob jobTemplate field.
-	JobTemplate batchv1.JobTemplateSpec `json:"jobTemplate"`
+	// CronJob is a standard Kubernetes CronJobSpec.
+	// All fields — schedule, timeZone, concurrencyPolicy, suspend, jobTemplate,
+	// successfulJobsHistoryLimit, failedJobsHistoryLimit, startingDeadlineSeconds —
+	// are fully honoured by the controller.
+	// See https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/cron-job-v1/
+	CronJob batchv1.CronJobSpec `json:"cronJob"`
 }
 
 // EnergyAwareCronJobStatus defines the observed state of EnergyAwareCronJob.
 type EnergyAwareCronJobStatus struct {
-	// NextScheduledTime is the next time a Job will be created.
+	// Active holds references to the currently running Jobs.
+	// +optional
+	Active []corev1.ObjectReference `json:"active,omitempty"`
+
+	// LastScheduleTime is the last time a Job was created.
+	// +optional
+	LastScheduleTime *metav1.Time `json:"lastScheduleTime,omitempty"`
+
+	// NextCronWindow is the time at which the next scheduling window opens (the
+	// raw cron occurrence). This is set as soon as the controller knows the next
+	// window, even before price data has been fetched.
+	// +optional
+	NextCronWindow *metav1.Time `json:"nextCronWindow,omitempty"`
+
+	// NextScheduledTime is the energy-optimised time at which the next Job will fire.
+	// Populated once price data has been evaluated for the current window.
 	// +optional
 	NextScheduledTime *metav1.Time `json:"nextScheduledTime,omitempty"`
 
-	// LastJobRef is a reference to the most recently created Job.
+	// LastSuccessfulTime is the last time a Job completed successfully.
 	// +optional
-	LastJobRef *corev1.ObjectReference `json:"lastJobRef,omitempty"`
+	LastSuccessfulTime *metav1.Time `json:"lastSuccessfulTime,omitempty"`
 
 	// Conditions reflect the current state of the EnergyAwareCronJob reconciliation.
 	// +optional
@@ -111,8 +105,10 @@ type EnergyAwareCronJobStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Namespaced,shortName=eacj
+// +kubebuilder:printcolumn:name="Schedule",type=string,JSONPath=`.spec.cronJob.schedule`
 // +kubebuilder:printcolumn:name="Source",type=string,JSONPath=`.spec.energyPriceSource.name`
-// +kubebuilder:printcolumn:name="Window",type=string,JSONPath=`.spec.earliestStart`,priority=1
+// +kubebuilder:printcolumn:name="Active",type=integer,JSONPath=`.status.active`
+// +kubebuilder:printcolumn:name="NextWindow",type=date,JSONPath=`.status.nextCronWindow`
 // +kubebuilder:printcolumn:name="NextRun",type=date,JSONPath=`.status.nextScheduledTime`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
