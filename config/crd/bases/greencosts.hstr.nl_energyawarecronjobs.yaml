@@ -8777,6 +8777,7 @@ spec:
                 - jobTemplate
                 - schedule
                 type: object
+                x-kubernetes-preserve-unknown-fields: true
               energyPriceSource:
                 description: |-
                   EnergyPriceSource is the name of the EnergyPriceSource resource in the same

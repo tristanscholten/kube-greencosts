@@ -68,6 +68,7 @@ func (r *EnergyPriceSourceReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 		return ctrl.Result{}, fmt.Errorf("fetching EnergyPriceSource %s: %w", req.NamespacedName, err)
 	}
+	base := eps.DeepCopy()
 
 	// ── Cache validity check ──────────────────────────────────────────────────
 	if eps.Status.LastUpdated != nil {
@@ -86,7 +87,7 @@ func (r *EnergyPriceSourceReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 	schedule, err := cron.ParseStandard(cronExpr)
 	if err != nil {
-		return r.setErrorCondition(ctx, &eps, fmt.Errorf("invalid refreshSchedule %q: %w", cronExpr, err))
+		return r.setErrorCondition(ctx, base, &eps, fmt.Errorf("invalid refreshSchedule %q: %w", cronExpr, err))
 	}
 
 	nextFire := schedule.Next(time.Now().Add(-time.Second))
@@ -98,13 +99,13 @@ func (r *EnergyPriceSourceReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// ── Resolve provider token from Secret ───────────────────────────────────
 	token, err := r.resolveToken(ctx, &eps)
 	if err != nil {
-		return r.setErrorCondition(ctx, &eps, err)
+		return r.setErrorCondition(ctx, base, &eps, err)
 	}
 
 	// ── Fetch prices ──────────────────────────────────────────────────────────
 	provider, err := r.Registry.Get(eps.Spec.Provider, eps.Spec, token)
 	if err != nil {
-		return r.setErrorCondition(ctx, &eps, fmt.Errorf("getting provider %q: %w", eps.Spec.Provider, err))
+		return r.setErrorCondition(ctx, base, &eps, fmt.Errorf("getting provider %q: %w", eps.Spec.Provider, err))
 	}
 
 	prices, err := provider.FetchPrices(ctx, providers.FetchPricesRequest{
@@ -113,7 +114,7 @@ func (r *EnergyPriceSourceReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	})
 	if err != nil {
 		slog.Error("fetching energy prices", "source", req.NamespacedName, "error", err)
-		return r.setErrorCondition(ctx, &eps,
+		return r.setErrorCondition(ctx, base, &eps,
 			oops.Wrapf(err, "fetching prices from provider %q", eps.Spec.Provider))
 	}
 
@@ -129,7 +130,7 @@ func (r *EnergyPriceSourceReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		LastTransitionTime: now,
 	})
 
-	if err := r.Status().Update(ctx, &eps); err != nil {
+	if err := r.Status().Patch(ctx, &eps, client.MergeFrom(base)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating EnergyPriceSource status: %w", err)
 	}
 
@@ -182,7 +183,7 @@ func (r *EnergyPriceSourceReconciler) readSecretKey(ctx context.Context, namespa
 	return string(value), nil
 }
 
-func (r *EnergyPriceSourceReconciler) setErrorCondition(ctx context.Context, eps *greencostsv1alpha1.EnergyPriceSource, err error) (ctrl.Result, error) {
+func (r *EnergyPriceSourceReconciler) setErrorCondition(ctx context.Context, base *greencostsv1alpha1.EnergyPriceSource, eps *greencostsv1alpha1.EnergyPriceSource, err error) (ctrl.Result, error) {
 	eps.Status.Conditions = setCondition(eps.Status.Conditions, metav1.Condition{
 		Type:               conditionTypeReady,
 		Status:             metav1.ConditionFalse,
@@ -191,7 +192,7 @@ func (r *EnergyPriceSourceReconciler) setErrorCondition(ctx context.Context, eps
 		LastTransitionTime: metav1.Now(),
 	})
 
-	if updateErr := r.Status().Update(ctx, eps); updateErr != nil {
+	if updateErr := r.Status().Patch(ctx, eps, client.MergeFrom(base)); updateErr != nil {
 		return ctrl.Result{}, fmt.Errorf("updating error condition (original: %w): %v", err, updateErr)
 	}
 

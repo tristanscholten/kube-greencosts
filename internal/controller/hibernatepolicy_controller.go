@@ -69,11 +69,12 @@ func (r *HibernatePolicyReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		}
 		return ctrl.Result{}, fmt.Errorf("fetching HibernatePolicy %s: %w", req.NamespacedName, err)
 	}
+	base := hp.DeepCopy()
 
 	// ── List matching namespaces ──────────────────────────────────────────────
 	selector, err := metav1.LabelSelectorAsSelector(&hp.Spec.Selector.NamespaceSelector)
 	if err != nil {
-		return r.setHPErrorCondition(ctx, &hp, fmt.Errorf("invalid namespaceSelector: %w", err))
+		return r.setHPErrorCondition(ctx, base, &hp, fmt.Errorf("invalid namespaceSelector: %w", err))
 	}
 
 	var nsList corev1.NamespaceList
@@ -148,7 +149,7 @@ func (r *HibernatePolicyReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		LastTransitionTime: metav1.Now(),
 	})
 
-	if err := r.Status().Update(ctx, &hp); err != nil {
+	if err := r.Status().Patch(ctx, &hp, client.MergeFrom(base)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating HibernatePolicy status: %w", err)
 	}
 
@@ -402,7 +403,7 @@ func weekdayFromSpec(w greencostsv1alpha1.Weekday) time.Weekday {
 	}
 }
 
-func (r *HibernatePolicyReconciler) setHPErrorCondition(ctx context.Context, hp *greencostsv1alpha1.HibernatePolicy, err error) (ctrl.Result, error) {
+func (r *HibernatePolicyReconciler) setHPErrorCondition(ctx context.Context, base *greencostsv1alpha1.HibernatePolicy, hp *greencostsv1alpha1.HibernatePolicy, err error) (ctrl.Result, error) {
 	hp.Status.Conditions = setCondition(hp.Status.Conditions, metav1.Condition{
 		Type:               conditionTypeReady,
 		Status:             metav1.ConditionFalse,
@@ -411,7 +412,7 @@ func (r *HibernatePolicyReconciler) setHPErrorCondition(ctx context.Context, hp 
 		LastTransitionTime: metav1.Now(),
 	})
 
-	if updateErr := r.Status().Update(ctx, hp); updateErr != nil {
+	if updateErr := r.Status().Patch(ctx, hp, client.MergeFrom(base)); updateErr != nil {
 		return ctrl.Result{}, fmt.Errorf("updating error condition (original: %w): %v", err, updateErr)
 	}
 

@@ -67,6 +67,7 @@ func (r *EnergyAwareCronJobReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if err := r.Get(ctx, req.NamespacedName, &eacj); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
+	base := eacj.DeepCopy()
 
 	// ── 1. Sync active Job list ───────────────────────────────────────────────
 	// Updates eacj.Status.Active, .LastSuccessfulTime in-memory and deletes old
@@ -79,7 +80,7 @@ func (r *EnergyAwareCronJobReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if eacj.Spec.CronJob.Suspend != nil && *eacj.Spec.CronJob.Suspend {
 		log.Info("EnergyAwareCronJob is suspended")
 		eacj.Status.NextScheduledTime = nil
-		return ctrl.Result{}, r.Status().Update(ctx, &eacj)
+		return ctrl.Result{}, r.Status().Patch(ctx, &eacj, client.MergeFrom(base))
 	}
 
 	now := time.Now()
@@ -87,10 +88,13 @@ func (r *EnergyAwareCronJobReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// ── 3. Optimal time already determined — fire or wait ────────────────────
 	if eacj.Status.NextScheduledTime != nil {
 		if !now.Before(eacj.Status.NextScheduledTime.Time) {
-			return r.dispatchJob(ctx, &eacj, now)
+			// Use the stored scheduled time, not now, so the job name is
+			// deterministic across conflict retries (same Unix second → same name
+			// → AlreadyExists is safely ignored).
+			return r.dispatchJob(ctx, base, &eacj, eacj.Status.NextScheduledTime.Time)
 		}
 		// Status may have changed in syncActiveJobs; persist before sleeping.
-		if err := r.Status().Update(ctx, &eacj); err != nil {
+		if err := r.Status().Patch(ctx, &eacj, client.MergeFrom(base)); err != nil {
 			return ctrl.Result{}, fmt.Errorf("updating status: %w", err)
 		}
 		return ctrl.Result{RequeueAfter: time.Until(eacj.Status.NextScheduledTime.Time)}, nil
@@ -111,7 +115,7 @@ func (r *EnergyAwareCronJobReconciler) Reconcile(ctx context.Context, req ctrl.R
 	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)
 	sched, err := parser.Parse(scheduleStr)
 	if err != nil {
-		return r.failWith(ctx, &eacj, fmt.Errorf("invalid schedule %q: %w", eacj.Spec.CronJob.Schedule, err))
+		return r.failWith(ctx, base, &eacj, fmt.Errorf("invalid schedule %q: %w", eacj.Spec.CronJob.Schedule, err))
 	}
 
 	// ── 5. Find next cron-scheduled time ─────────────────────────────────────
@@ -124,7 +128,7 @@ func (r *EnergyAwareCronJobReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	nextCronTime, err := nextScheduleTime(sched, lastRun, now, eacj.Spec.CronJob.StartingDeadlineSeconds)
 	if err != nil {
-		return r.failWith(ctx, &eacj, err)
+		return r.failWith(ctx, base, &eacj, err)
 	}
 
 	// ── 6. Not yet time — persist active-list changes and sleep ──────────────
@@ -133,7 +137,7 @@ func (r *EnergyAwareCronJobReconciler) Reconcile(ctx context.Context, req ctrl.R
 		// shows something useful before price optimisation has run.
 		t := metav1.NewTime(nextCronTime)
 		eacj.Status.NextCronWindow = &t
-		if err := r.Status().Update(ctx, &eacj); err != nil {
+		if err := r.Status().Patch(ctx, &eacj, client.MergeFrom(base)); err != nil {
 			return ctrl.Result{}, fmt.Errorf("updating status: %w", err)
 		}
 		return ctrl.Result{RequeueAfter: time.Until(nextCronTime)}, nil
@@ -145,7 +149,7 @@ func (r *EnergyAwareCronJobReconciler) Reconcile(ctx context.Context, req ctrl.R
 			"active", len(eacj.Status.Active))
 		t := metav1.NewTime(now)
 		eacj.Status.LastScheduleTime = &t
-		if err := r.Status().Update(ctx, &eacj); err != nil {
+		if err := r.Status().Patch(ctx, &eacj, client.MergeFrom(base)); err != nil {
 			return ctrl.Result{}, fmt.Errorf("updating status: %w", err)
 		}
 		return ctrl.Result{}, nil
@@ -153,7 +157,7 @@ func (r *EnergyAwareCronJobReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	// ── 8. Zero-duration window — fire immediately ───────────────────────────
 	if eacj.Spec.EnergyStrategy.ScheduleWindow.Duration == 0 {
-		return r.dispatchJob(ctx, &eacj, now)
+		return r.dispatchJob(ctx, base, &eacj, now)
 	}
 
 	// ── 9. Fetch price data ───────────────────────────────────────────────────
@@ -164,7 +168,7 @@ func (r *EnergyAwareCronJobReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 	if err := r.Get(ctx, epsKey, &eps); err != nil {
 		if apierrors.IsNotFound(err) {
-			return r.failWith(ctx, &eacj,
+			return r.failWith(ctx, base, &eacj,
 				fmt.Errorf("EnergyPriceSource %q not found", eacj.Spec.EnergyPriceSource.Name))
 		}
 		return ctrl.Result{}, fmt.Errorf("fetching EnergyPriceSource: %w", err)
@@ -177,7 +181,7 @@ func (r *EnergyAwareCronJobReconciler) Reconcile(ctx context.Context, req ctrl.R
 		log.Info("no price data in window yet — will retry",
 			"windowStart", nextCronTime.Format(time.RFC3339),
 			"windowEnd", windowEnd.Format(time.RFC3339))
-		if err := r.Status().Update(ctx, &eacj); err != nil {
+		if err := r.Status().Patch(ctx, &eacj, client.MergeFrom(base)); err != nil {
 			return ctrl.Result{}, fmt.Errorf("updating status: %w", err)
 		}
 		return ctrl.Result{RequeueAfter: retryShort}, nil
@@ -193,7 +197,7 @@ func (r *EnergyAwareCronJobReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 	// Optimal slot is already in the past within the window — fire now.
 	if !optimalTime.After(now) {
-		return r.dispatchJob(ctx, &eacj, now)
+		return r.dispatchJob(ctx, base, &eacj, now)
 	}
 
 	// ── 11. Persist optimal time and sleep until it arrives ──────────────────
@@ -212,7 +216,7 @@ func (r *EnergyAwareCronJobReconciler) Reconcile(ctx context.Context, req ctrl.R
 			optimalTime.Format(time.RFC3339), cheapest.EurPerMWh),
 		LastTransitionTime: metav1.Now(),
 	})
-	if err := r.Status().Update(ctx, &eacj); err != nil {
+	if err := r.Status().Patch(ctx, &eacj, client.MergeFrom(base)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating NextScheduledTime: %w", err)
 	}
 	return ctrl.Result{RequeueAfter: time.Until(optimalTime)}, nil
@@ -222,6 +226,7 @@ func (r *EnergyAwareCronJobReconciler) Reconcile(ctx context.Context, req ctrl.R
 // necessary, and updates the EnergyAwareCronJob status.
 func (r *EnergyAwareCronJobReconciler) dispatchJob(
 	ctx context.Context,
+	base *greencostsv1alpha1.EnergyAwareCronJob,
 	eacj *greencostsv1alpha1.EnergyAwareCronJob,
 	now time.Time,
 ) (ctrl.Result, error) {
@@ -245,10 +250,13 @@ func (r *EnergyAwareCronJobReconciler) dispatchJob(
 	if err := ctrl.SetControllerReference(eacj, job, r.Scheme); err != nil {
 		return ctrl.Result{}, fmt.Errorf("setting owner reference: %w", err)
 	}
-	if err := r.Create(ctx, job); err != nil && !apierrors.IsAlreadyExists(err) {
-		return ctrl.Result{}, fmt.Errorf("creating Job for EnergyAwareCronJob %s: %w", eacj.Name, err)
+	if err := r.Create(ctx, job); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return ctrl.Result{}, fmt.Errorf("creating Job for EnergyAwareCronJob %s: %w", eacj.Name, err)
+		}
+	} else {
+		log.Info("job dispatched", "job", job.Name)
 	}
-	log.Info("job dispatched", "job", job.Name)
 
 	ref := corev1.ObjectReference{
 		APIVersion: "batch/v1",
@@ -269,10 +277,13 @@ func (r *EnergyAwareCronJobReconciler) dispatchJob(
 		Message:            fmt.Sprintf("job %s dispatched at %s", job.Name, now.Format(time.RFC3339)),
 		LastTransitionTime: metav1.Now(),
 	})
-	if err := r.Status().Update(ctx, eacj); err != nil {
+	if err := r.Status().Patch(ctx, eacj, client.MergeFrom(base)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating status after dispatch: %w", err)
 	}
-	return ctrl.Result{}, nil
+	// Requeue immediately so the reconciler computes the next cron window and
+	// optimal dispatch time and surfaces them in status without waiting for an
+	// external watch event.
+	return ctrl.Result{Requeue: true}, nil
 }
 
 // syncActiveJobs lists all Jobs owned by eacj, updates status.Active and
@@ -444,8 +455,7 @@ func jobStartTime(job *batchv1.Job) time.Time {
 }
 
 func (r *EnergyAwareCronJobReconciler) failWith(
-	ctx context.Context,
-	eacj *greencostsv1alpha1.EnergyAwareCronJob,
+	ctx context.Context, base *greencostsv1alpha1.EnergyAwareCronJob, eacj *greencostsv1alpha1.EnergyAwareCronJob,
 	err error,
 ) (ctrl.Result, error) {
 	eacj.Status.Conditions = setCondition(eacj.Status.Conditions, metav1.Condition{
@@ -455,7 +465,7 @@ func (r *EnergyAwareCronJobReconciler) failWith(
 		Message:            err.Error(),
 		LastTransitionTime: metav1.Now(),
 	})
-	if updateErr := r.Status().Update(ctx, eacj); updateErr != nil {
+	if updateErr := r.Status().Patch(ctx, eacj, client.MergeFrom(base)); updateErr != nil {
 		return ctrl.Result{}, fmt.Errorf("updating error condition (original: %w): %v", err, updateErr)
 	}
 	return ctrl.Result{RequeueAfter: retryShort}, nil

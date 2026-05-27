@@ -65,6 +65,7 @@ type EnergyAwareCronJobSpec struct {
 	// successfulJobsHistoryLimit, failedJobsHistoryLimit, startingDeadlineSeconds —
 	// are fully honoured by the controller.
 	// See https://kubernetes.io/docs/reference/kubernetes-api/workload-resources/cron-job-v1/
+	// +kubebuilder:pruning:PreserveUnknownFields
 	CronJob batchv1.CronJobSpec `json:"cronJob"`
 }
 

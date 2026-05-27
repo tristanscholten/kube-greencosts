@@ -8,6 +8,16 @@ resources:
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:
+# Inject x-kubernetes-preserve-unknown-fields into embedded ObjectMeta nodes
+# that controller-gen does not mark automatically, suppressing "unknown field
+# creationTimestamp" warnings emitted by the API server for those paths.
+- path: patches/preserve_unknown_fields.yaml
+  target:
+    group: apiextensions.k8s.io
+    version: v1
+    kind: CustomResourceDefinition
+    name: energyawarecronjobs.greencosts.hstr.nl
+
 # [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix.
 # patches here are for enabling the conversion webhook for each CRD
 # +kubebuilder:scaffold:crdkustomizewebhookpatch
