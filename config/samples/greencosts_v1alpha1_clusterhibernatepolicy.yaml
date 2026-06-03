@@ -1,0 +1,25 @@
+apiVersion: greencosts.hstr.nl/v1alpha1
+kind: ClusterHibernatePolicy
+metadata:
+  name: business-hours
+  labels:
+    app.kubernetes.io/name: kube-greencosts
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  # availabilityWindows defines when hibernation is suppressed.
+  # Workloads are restored at the start of each window and hibernated outside them.
+  availabilityWindows:
+    - weekdays: [Mon, Tue, Wed, Thu, Fri]
+      from: "08:00"
+      until: "18:00"
+      timezone: "Europe/Amsterdam"
+
+  action:
+    scaleToZero: true
+
+---
+# Example: apply to a single Deployment by annotation
+# kubectl annotate deployment my-app greencosts.hstr.nl/clusterhibernatepolicy=business-hours
+
+# Example: apply to all workloads in a namespace by annotating the namespace
+# kubectl annotate namespace staging greencosts.hstr.nl/clusterhibernatepolicy=business-hours

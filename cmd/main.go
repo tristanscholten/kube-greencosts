@@ -29,8 +29,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/rest"
-	metricsclientset "k8s.io/metrics/pkg/client/clientset/versioned"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -41,7 +39,6 @@ import (
 
 	greencostsv1alpha1 "github.com/tristanscholten/kube-greencosts/api/v1alpha1"
 	"github.com/tristanscholten/kube-greencosts/internal/controller"
-	"github.com/tristanscholten/kube-greencosts/internal/metrics"
 	"github.com/tristanscholten/kube-greencosts/internal/providers"
 	"github.com/tristanscholten/kube-greencosts/internal/providers/custom"
 	"github.com/tristanscholten/kube-greencosts/internal/providers/enever"
@@ -219,25 +216,6 @@ func main() {
 	providerRegistry.Register(entsoe.ProviderName, entsoe.Factory())
 	providerRegistry.Register(enever.ProviderName, enever.Factory())
 
-	// ── Metrics client (metrics-server + optional Prometheus) ─────────────────
-	restCfg, err := rest.InClusterConfig()
-	if err != nil {
-		// Fall back to kubeconfig when running outside the cluster (dev mode).
-		restCfg = ctrl.GetConfigOrDie()
-	}
-
-	metricsCS, err := metricsclientset.NewForConfig(restCfg)
-	if err != nil {
-		setupLog.Error(err, "unable to create metrics clientset")
-		os.Exit(1)
-	}
-
-	metricsClient, err := metrics.NewClient(metricsCS, prometheusURL)
-	if err != nil {
-		setupLog.Error(err, "unable to create metrics client")
-		os.Exit(1)
-	}
-
 	// ── Register controllers ───────────────────────────────────────────────────
 	if err := (&controller.EnergyPriceSourceReconciler{
 		Client:   mgr.GetClient(),
@@ -256,11 +234,17 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.HibernatePolicyReconciler{
-		Client:        mgr.GetClient(),
-		Scheme:        mgr.GetScheme(),
-		MetricsClient: metricsClient,
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "HibernatePolicy")
+		os.Exit(1)
+	}
+	if err := (&controller.ClusterHibernatePolicyReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ClusterHibernatePolicy")
 		os.Exit(1)
 	}
 	if err := greencostswebhook.SetupEnergyAwareCronJobWebhookWithManager(mgr); err != nil {

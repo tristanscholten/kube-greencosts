@@ -1,9 +1,27 @@
 apiVersion: greencosts.hstr.nl/v1alpha1
 kind: HibernatePolicy
 metadata:
+  name: hibernatepolicy-sample
+  namespace: my-app
   labels:
     app.kubernetes.io/name: kube-greencosts
     app.kubernetes.io/managed-by: kustomize
-  name: hibernatepolicy-sample
 spec:
-  # TODO(user): Add fields here
+  # workloadTypes lists which Kubernetes workload kinds this policy hibernates.
+  # Only workloads of these types in the same namespace are affected.
+  workloadTypes:
+    - Deployment
+    - StatefulSet
+
+  # availabilityWindows defines recurring time slots during which hibernation
+  # is suppressed. Any hibernated workloads are restored at the start of each window.
+  availabilityWindows:
+    - weekdays: [Mon, Tue, Wed, Thu, Fri]
+      from: "08:00"
+      until: "18:00"
+      timezone: "Europe/Amsterdam"
+
+  # action describes what happens when a workload is hibernated.
+  action:
+    scaleToZero: true
+    # snapshotPVCs: true  # Uncomment to take VolumeSnapshots before scaling down

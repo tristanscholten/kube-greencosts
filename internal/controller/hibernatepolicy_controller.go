@@ -18,44 +18,49 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	greencostsv1alpha1 "github.com/tristanscholten/kube-greencosts/api/v1alpha1"
-	"github.com/tristanscholten/kube-greencosts/internal/metrics"
 )
 
 const (
-	annotationOriginalReplicas = "greencosts.hstr.nl/original-replicas"
-	annotationHibernated       = "greencosts.hstr.nl/hibernated"
+	annotationOriginalReplicas     = "greencosts.hstr.nl/original-replicas"
+	annotationOriginalNodeSelector = "greencosts.hstr.nl/original-nodeselector"
+	annotationHibernated           = "greencosts.hstr.nl/hibernated"
 
-	idleCheckInterval = 5 * time.Minute
+	// hibernateNodeSelectorKey is injected into DaemonSet podTemplates to
+	// prevent scheduling. No real node should carry this label.
+	hibernateNodeSelectorKey   = "greencosts.hstr.nl/hibernate"
+	hibernateNodeSelectorValue = "true"
+
+	windowCheckInterval = 5 * time.Minute
 )
 
 // HibernatePolicyReconciler reconciles a HibernatePolicy object.
 type HibernatePolicyReconciler struct {
 	client.Client
-	Scheme        *runtime.Scheme
-	MetricsClient metrics.Client
+	Scheme *runtime.Scheme
 }
 
 // +kubebuilder:rbac:groups=greencosts.hstr.nl,resources=hibernatepolicies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=greencosts.hstr.nl,resources=hibernatepolicies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=greencosts.hstr.nl,resources=hibernatepolicies/finalizers,verbs=update
-// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=snapshot.storage.k8s.io,resources=volumesnapshots,verbs=create;list;watch
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch
 
@@ -70,297 +75,396 @@ func (r *HibernatePolicyReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, fmt.Errorf("fetching HibernatePolicy %s: %w", req.NamespacedName, err)
 	}
 	base := hp.DeepCopy()
-
-	// ── List matching namespaces ──────────────────────────────────────────────
-	selector, err := metav1.LabelSelectorAsSelector(&hp.Spec.Selector.NamespaceSelector)
-	if err != nil {
-		return r.setHPErrorCondition(ctx, base, &hp, fmt.Errorf("invalid namespaceSelector: %w", err))
-	}
-
-	var nsList corev1.NamespaceList
-	if err := r.List(ctx, &nsList, &client.ListOptions{LabelSelector: selector}); err != nil {
-		return ctrl.Result{}, fmt.Errorf("listing namespaces: %w", err)
-	}
+	namespace := hp.Namespace
 
 	now := time.Now()
+	inWindow, windowEnd := isInAvailabilityWindow(hp.Spec.AvailabilityWindows, now)
+
 	hibernated := []string{}
-	var nextTransition time.Time
+	var errs []error
 
-	for i := range nsList.Items {
-		ns := &nsList.Items[i]
-		inIgnore, windowEnd := isInIgnoreWindow(hp.Spec.IdleDetection.IgnoreDuring, now)
-
-		if inIgnore {
-			// Wake up namespaces that were previously hibernated.
-			if wakeErr := r.wakeNamespace(ctx, ns.Name); wakeErr != nil {
-				log.Error(wakeErr, "waking namespace", "namespace", ns.Name)
-			}
-			// Track the earliest window end so we know when to next check.
-			if nextTransition.IsZero() || windowEnd.Before(nextTransition) {
-				nextTransition = windowEnd
-			}
-			continue
-		}
-
-		// Track when the next ignore window begins so we can wake in time.
-		nextStart := nextIgnoreWindowStart(hp.Spec.IdleDetection.IgnoreDuring, now)
-		if !nextStart.IsZero() {
-			if nextTransition.IsZero() || nextStart.Before(nextTransition) {
-				nextTransition = nextStart
+	if inWindow {
+		log.Info("inside availability window — waking workloads", "namespace", namespace, "windowEnd", windowEnd)
+		for _, wt := range hp.Spec.WorkloadTypes {
+			if err := r.wakeWorkloadType(ctx, namespace, wt); err != nil {
+				errs = append(errs, fmt.Errorf("waking %s: %w", wt, err))
 			}
 		}
-
-		// Check if namespace is already hibernated.
-		isAlreadyHibernated, err := r.isNamespaceHibernated(ctx, ns.Name)
-		if err != nil {
-			log.Error(err, "checking hibernation state", "namespace", ns.Name)
-			continue
-		}
-
-		if isAlreadyHibernated {
-			hibernated = append(hibernated, ns.Name)
-			continue
-		}
-
-		// Evaluate idle conditions.
-		idle, err := r.isNamespaceIdle(ctx, ns.Name, hp.Spec.IdleDetection)
-		if err != nil {
-			log.Error(err, "evaluating idle conditions", "namespace", ns.Name)
-			continue
-		}
-
-		if idle {
-			log.Info("hibernating namespace", "namespace", ns.Name)
-			if hibernateErr := r.hibernateNamespace(ctx, ns.Name, hp.Spec.Action); hibernateErr != nil {
-				log.Error(hibernateErr, "hibernating namespace", "namespace", ns.Name)
+	} else {
+		for _, wt := range hp.Spec.WorkloadTypes {
+			names, err := r.hibernateWorkloadType(ctx, namespace, wt, hp.Spec.Action)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("hibernating %s: %w", wt, err))
 				continue
 			}
-			hibernated = append(hibernated, ns.Name)
+			hibernated = append(hibernated, names...)
 		}
 	}
 
 	// ── Update status ─────────────────────────────────────────────────────────
-	hp.Status.HibernatedNamespaces = hibernated
+	if inWindow {
+		hp.Status.HibernatedWorkloads = nil
+	} else {
+		hp.Status.HibernatedWorkloads = hibernated
+	}
+
 	hp.Status.Conditions = setCondition(hp.Status.Conditions, metav1.Condition{
 		Type:               conditionTypeReady,
 		Status:             metav1.ConditionTrue,
 		Reason:             "Reconciled",
-		Message:            fmt.Sprintf("%d namespaces under management", len(nsList.Items)),
+		Message:            fmt.Sprintf("%d workload type(s) managed in namespace %s", len(hp.Spec.WorkloadTypes), namespace),
 		LastTransitionTime: metav1.Now(),
 	})
 
 	if err := r.Status().Patch(ctx, &hp, client.MergeFrom(base)); err != nil {
-		return ctrl.Result{}, fmt.Errorf("updating HibernatePolicy status: %w", err)
+		return ctrl.Result{}, fmt.Errorf("patching HibernatePolicy status: %w", err)
 	}
 
-	requeueAfter := idleCheckInterval
-	if !nextTransition.IsZero() {
-		if d := time.Until(nextTransition); d > 0 && d < requeueAfter {
+	// ── Requeue at next window boundary ───────────────────────────────────────
+	requeueAfter := windowCheckInterval
+	if inWindow {
+		if d := time.Until(windowEnd); d > 0 && d < requeueAfter {
 			requeueAfter = d
 		}
+	} else {
+		if nextStart := nextAvailabilityWindowStart(hp.Spec.AvailabilityWindows, now); !nextStart.IsZero() {
+			if d := time.Until(nextStart); d > 0 && d < requeueAfter {
+				requeueAfter = d
+			}
+		}
 	}
 
-	return ctrl.Result{RequeueAfter: requeueAfter}, nil
+	return ctrl.Result{RequeueAfter: requeueAfter}, errors.Join(errs...)
 }
 
-// isNamespaceIdle returns true when all configured idle thresholds are met.
-func (r *HibernatePolicyReconciler) isNamespaceIdle(
+// ── Per-type hibernate/wake ───────────────────────────────────────────────────
+
+func (r *HibernatePolicyReconciler) hibernateWorkloadType(
 	ctx context.Context,
 	namespace string,
-	detection greencostsv1alpha1.IdleDetection,
-) (bool, error) {
-	if r.MetricsClient == nil {
-		return false, nil
+	wt greencostsv1alpha1.WorkloadType,
+	action greencostsv1alpha1.HibernateAction,
+) ([]string, error) {
+	if !action.ScaleToZero {
+		return nil, nil
 	}
-
-	// CPU check (metrics-server).
-	if detection.CPUBelow != nil {
-		cpu, err := r.MetricsClient.QueryNamespaceCPU(ctx, namespace)
-		if err != nil {
-			return false, fmt.Errorf("querying CPU for %q: %w", namespace, err)
-		}
-		if cpu.Cmp(*detection.CPUBelow) >= 0 {
-			return false, nil
-		}
+	switch wt {
+	case greencostsv1alpha1.WorkloadTypeDeployment:
+		return r.hibernateDeployments(ctx, namespace)
+	case greencostsv1alpha1.WorkloadTypeStatefulSet:
+		return r.hibernateStatefulSets(ctx, namespace)
+	case greencostsv1alpha1.WorkloadTypeReplicaSet:
+		return r.hibernateReplicaSets(ctx, namespace)
+	case greencostsv1alpha1.WorkloadTypeDaemonSet:
+		return r.hibernateDaemonSets(ctx, namespace)
 	}
-
-	// Network check (Prometheus).
-	if detection.NetworkBelow != nil {
-		window := defaultDuration(detection.NoIngressRequestsFor, 30*time.Minute)
-		net, err := r.MetricsClient.QueryNamespaceNetwork(ctx, namespace, window)
-		if err != nil {
-			return false, fmt.Errorf("querying network for %q: %w", namespace, err)
-		}
-		if net.Cmp(*detection.NetworkBelow) >= 0 {
-			return false, nil
-		}
-	}
-
-	// Ingress request check (Prometheus).
-	if detection.NoIngressRequestsFor != nil {
-		rps, err := r.MetricsClient.QueryNamespaceIngressRPS(ctx, namespace, detection.NoIngressRequestsFor.Duration)
-		if err != nil {
-			return false, fmt.Errorf("querying ingress RPS for %q: %w", namespace, err)
-		}
-		if rps > 0 {
-			return false, nil
-		}
-	}
-
-	return true, nil
+	return nil, nil
 }
 
-// hibernateNamespace scales all Deployments in the namespace to zero.
-func (r *HibernatePolicyReconciler) hibernateNamespace(ctx context.Context, namespace string, action greencostsv1alpha1.HibernateAction) error {
-	if !action.ScaleDeploymentsToZero {
-		return nil
+func (r *HibernatePolicyReconciler) wakeWorkloadType(
+	ctx context.Context,
+	namespace string,
+	wt greencostsv1alpha1.WorkloadType,
+) error {
+	switch wt {
+	case greencostsv1alpha1.WorkloadTypeDeployment:
+		return r.wakeDeployments(ctx, namespace)
+	case greencostsv1alpha1.WorkloadTypeStatefulSet:
+		return r.wakeStatefulSets(ctx, namespace)
+	case greencostsv1alpha1.WorkloadTypeReplicaSet:
+		return r.wakeReplicaSets(ctx, namespace)
+	case greencostsv1alpha1.WorkloadTypeDaemonSet:
+		return r.wakeDaemonSets(ctx, namespace)
 	}
+	return nil
+}
 
-	var deployList appsv1.DeploymentList
-	if err := r.List(ctx, &deployList, client.InNamespace(namespace)); err != nil {
-		return fmt.Errorf("listing deployments in %q: %w", namespace, err)
+// ── Deployments ───────────────────────────────────────────────────────────────
+
+func (r *HibernatePolicyReconciler) hibernateDeployments(ctx context.Context, namespace string) ([]string, error) {
+	var list appsv1.DeploymentList
+	if err := r.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("listing Deployments in %q: %w", namespace, err)
 	}
-
-	for i := range deployList.Items {
-		d := &deployList.Items[i]
-		// Skip already-scaled-down deployments.
+	hibernated := []string{}
+	for i := range list.Items {
+		d := &list.Items[i]
 		if d.Annotations[annotationHibernated] == "true" {
+			hibernated = append(hibernated, "Deployment/"+d.Name)
 			continue
 		}
-
 		replicas := int32(1)
 		if d.Spec.Replicas != nil {
 			replicas = *d.Spec.Replicas
 		}
-
 		if d.Annotations == nil {
 			d.Annotations = map[string]string{}
 		}
-
 		d.Annotations[annotationOriginalReplicas] = strconv.Itoa(int(replicas))
 		d.Annotations[annotationHibernated] = "true"
-
 		zero := int32(0)
 		d.Spec.Replicas = &zero
-
 		if err := r.Update(ctx, d); err != nil {
-			return fmt.Errorf("scaling deployment %s/%s to zero: %w", namespace, d.Name, err)
+			return hibernated, fmt.Errorf("scaling Deployment %s/%s to zero: %w", namespace, d.Name, err)
 		}
+		hibernated = append(hibernated, "Deployment/"+d.Name)
 	}
-
-	return nil
+	return hibernated, nil
 }
 
-// wakeNamespace restores original replica counts for Deployments in the namespace.
-func (r *HibernatePolicyReconciler) wakeNamespace(ctx context.Context, namespace string) error {
-	var deployList appsv1.DeploymentList
-	if err := r.List(ctx, &deployList, client.InNamespace(namespace)); err != nil {
-		return fmt.Errorf("listing deployments in %q: %w", namespace, err)
+func (r *HibernatePolicyReconciler) wakeDeployments(ctx context.Context, namespace string) error {
+	var list appsv1.DeploymentList
+	if err := r.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return fmt.Errorf("listing Deployments in %q: %w", namespace, err)
 	}
-
-	for i := range deployList.Items {
-		d := &deployList.Items[i]
+	for i := range list.Items {
+		d := &list.Items[i]
 		if d.Annotations[annotationHibernated] != "true" {
 			continue
 		}
-
-		origStr, ok := d.Annotations[annotationOriginalReplicas]
-		if !ok {
-			origStr = "1"
-		}
-
-		orig, err := strconv.Atoi(origStr)
-		if err != nil {
-			orig = 1
-		}
-
+		orig := parseOriginalReplicas(d.Annotations[annotationOriginalReplicas], 1)
 		replicas := int32(orig)
 		d.Spec.Replicas = &replicas
 		delete(d.Annotations, annotationHibernated)
 		delete(d.Annotations, annotationOriginalReplicas)
-
 		if err := r.Update(ctx, d); err != nil {
-			return fmt.Errorf("restoring deployment %s/%s: %w", namespace, d.Name, err)
+			return fmt.Errorf("restoring Deployment %s/%s: %w", namespace, d.Name, err)
 		}
 	}
-
 	return nil
 }
 
-// isNamespaceHibernated returns true if any Deployment in the namespace carries
-// the hibernated annotation.
-func (r *HibernatePolicyReconciler) isNamespaceHibernated(ctx context.Context, namespace string) (bool, error) {
-	var deployList appsv1.DeploymentList
-	if err := r.List(ctx, &deployList, client.InNamespace(namespace)); err != nil {
-		return false, fmt.Errorf("listing deployments in %q: %w", namespace, err)
-	}
+// ── StatefulSets ──────────────────────────────────────────────────────────────
 
-	for _, d := range deployList.Items {
-		if d.Annotations[annotationHibernated] == "true" {
-			return true, nil
+func (r *HibernatePolicyReconciler) hibernateStatefulSets(ctx context.Context, namespace string) ([]string, error) {
+	var list appsv1.StatefulSetList
+	if err := r.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("listing StatefulSets in %q: %w", namespace, err)
+	}
+	hibernated := []string{}
+	for i := range list.Items {
+		s := &list.Items[i]
+		if s.Annotations[annotationHibernated] == "true" {
+			hibernated = append(hibernated, "StatefulSet/"+s.Name)
+			continue
 		}
+		replicas := int32(1)
+		if s.Spec.Replicas != nil {
+			replicas = *s.Spec.Replicas
+		}
+		if s.Annotations == nil {
+			s.Annotations = map[string]string{}
+		}
+		s.Annotations[annotationOriginalReplicas] = strconv.Itoa(int(replicas))
+		s.Annotations[annotationHibernated] = "true"
+		zero := int32(0)
+		s.Spec.Replicas = &zero
+		if err := r.Update(ctx, s); err != nil {
+			return hibernated, fmt.Errorf("scaling StatefulSet %s/%s to zero: %w", namespace, s.Name, err)
+		}
+		hibernated = append(hibernated, "StatefulSet/"+s.Name)
 	}
-
-	return false, nil
+	return hibernated, nil
 }
 
-// isInIgnoreWindow returns true if now falls within any of the specified ignore
-// periods. When inside a window, windowEnd is the time the current window ends.
-func isInIgnoreWindow(periods []greencostsv1alpha1.IgnorePeriod, now time.Time) (bool, time.Time) {
-	for _, p := range periods {
-		loc, err := time.LoadLocation(p.Timezone)
+func (r *HibernatePolicyReconciler) wakeStatefulSets(ctx context.Context, namespace string) error {
+	var list appsv1.StatefulSetList
+	if err := r.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return fmt.Errorf("listing StatefulSets in %q: %w", namespace, err)
+	}
+	for i := range list.Items {
+		s := &list.Items[i]
+		if s.Annotations[annotationHibernated] != "true" {
+			continue
+		}
+		orig := parseOriginalReplicas(s.Annotations[annotationOriginalReplicas], 1)
+		replicas := int32(orig)
+		s.Spec.Replicas = &replicas
+		delete(s.Annotations, annotationHibernated)
+		delete(s.Annotations, annotationOriginalReplicas)
+		if err := r.Update(ctx, s); err != nil {
+			return fmt.Errorf("restoring StatefulSet %s/%s: %w", namespace, s.Name, err)
+		}
+	}
+	return nil
+}
+
+// ── ReplicaSets ───────────────────────────────────────────────────────────────
+
+func (r *HibernatePolicyReconciler) hibernateReplicaSets(ctx context.Context, namespace string) ([]string, error) {
+	var list appsv1.ReplicaSetList
+	if err := r.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("listing ReplicaSets in %q: %w", namespace, err)
+	}
+	hibernated := []string{}
+	for i := range list.Items {
+		rs := &list.Items[i]
+		// Skip ReplicaSets owned by a Deployment — they are managed by the Deployment controller.
+		if isOwnedByDeployment(rs) {
+			continue
+		}
+		if rs.Annotations[annotationHibernated] == "true" {
+			hibernated = append(hibernated, "ReplicaSet/"+rs.Name)
+			continue
+		}
+		replicas := int32(1)
+		if rs.Spec.Replicas != nil {
+			replicas = *rs.Spec.Replicas
+		}
+		if rs.Annotations == nil {
+			rs.Annotations = map[string]string{}
+		}
+		rs.Annotations[annotationOriginalReplicas] = strconv.Itoa(int(replicas))
+		rs.Annotations[annotationHibernated] = "true"
+		zero := int32(0)
+		rs.Spec.Replicas = &zero
+		if err := r.Update(ctx, rs); err != nil {
+			return hibernated, fmt.Errorf("scaling ReplicaSet %s/%s to zero: %w", namespace, rs.Name, err)
+		}
+		hibernated = append(hibernated, "ReplicaSet/"+rs.Name)
+	}
+	return hibernated, nil
+}
+
+func (r *HibernatePolicyReconciler) wakeReplicaSets(ctx context.Context, namespace string) error {
+	var list appsv1.ReplicaSetList
+	if err := r.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return fmt.Errorf("listing ReplicaSets in %q: %w", namespace, err)
+	}
+	for i := range list.Items {
+		rs := &list.Items[i]
+		if isOwnedByDeployment(rs) {
+			continue
+		}
+		if rs.Annotations[annotationHibernated] != "true" {
+			continue
+		}
+		orig := parseOriginalReplicas(rs.Annotations[annotationOriginalReplicas], 1)
+		replicas := int32(orig)
+		rs.Spec.Replicas = &replicas
+		delete(rs.Annotations, annotationHibernated)
+		delete(rs.Annotations, annotationOriginalReplicas)
+		if err := r.Update(ctx, rs); err != nil {
+			return fmt.Errorf("restoring ReplicaSet %s/%s: %w", namespace, rs.Name, err)
+		}
+	}
+	return nil
+}
+
+// ── DaemonSets ────────────────────────────────────────────────────────────────
+
+// hibernateDaemonSets injects a non-schedulable nodeSelector into each DaemonSet's
+// pod template so no new pods are scheduled. The original nodeSelector is stored
+// as JSON in the annotation greencosts.hstr.nl/original-nodeselector.
+func (r *HibernatePolicyReconciler) hibernateDaemonSets(ctx context.Context, namespace string) ([]string, error) {
+	var list appsv1.DaemonSetList
+	if err := r.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return nil, fmt.Errorf("listing DaemonSets in %q: %w", namespace, err)
+	}
+	hibernated := []string{}
+	for i := range list.Items {
+		ds := &list.Items[i]
+		if ds.Annotations[annotationHibernated] == "true" {
+			hibernated = append(hibernated, "DaemonSet/"+ds.Name)
+			continue
+		}
+		origNS := ds.Spec.Template.Spec.NodeSelector
+		origJSON, err := json.Marshal(origNS)
+		if err != nil {
+			return hibernated, fmt.Errorf("marshalling nodeSelector for DaemonSet %s/%s: %w", namespace, ds.Name, err)
+		}
+		if ds.Annotations == nil {
+			ds.Annotations = map[string]string{}
+		}
+		ds.Annotations[annotationOriginalNodeSelector] = string(origJSON)
+		ds.Annotations[annotationHibernated] = "true"
+		ds.Spec.Template.Spec.NodeSelector = map[string]string{
+			hibernateNodeSelectorKey: hibernateNodeSelectorValue,
+		}
+		if err := r.Update(ctx, ds); err != nil {
+			return hibernated, fmt.Errorf("hibernating DaemonSet %s/%s: %w", namespace, ds.Name, err)
+		}
+		hibernated = append(hibernated, "DaemonSet/"+ds.Name)
+	}
+	return hibernated, nil
+}
+
+func (r *HibernatePolicyReconciler) wakeDaemonSets(ctx context.Context, namespace string) error {
+	log := logf.FromContext(ctx)
+	var list appsv1.DaemonSetList
+	if err := r.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return fmt.Errorf("listing DaemonSets in %q: %w", namespace, err)
+	}
+	for i := range list.Items {
+		ds := &list.Items[i]
+		if ds.Annotations[annotationHibernated] != "true" {
+			continue
+		}
+		origJSON := ds.Annotations[annotationOriginalNodeSelector]
+		var origNS map[string]string
+		if origJSON != "" {
+			if err := json.Unmarshal([]byte(origJSON), &origNS); err != nil {
+				log.Error(err, "parsing stored nodeSelector annotation, restoring with nil", "daemonset", ds.Name)
+				origNS = nil
+			}
+		}
+		ds.Spec.Template.Spec.NodeSelector = origNS
+		delete(ds.Annotations, annotationHibernated)
+		delete(ds.Annotations, annotationOriginalNodeSelector)
+		if err := r.Update(ctx, ds); err != nil {
+			return fmt.Errorf("restoring DaemonSet %s/%s: %w", namespace, ds.Name, err)
+		}
+	}
+	return nil
+}
+
+// ── Time-window helpers ───────────────────────────────────────────────────────
+
+// isInAvailabilityWindow returns true when now falls within any configured
+// availability window. windowEnd is the time the current window ends.
+func isInAvailabilityWindow(windows []greencostsv1alpha1.AvailabilityWindow, now time.Time) (bool, time.Time) {
+	for _, w := range windows {
+		loc, err := time.LoadLocation(w.Timezone)
 		if err != nil {
 			continue
 		}
-
 		local := now.In(loc)
-		weekday := local.Weekday()
-
-		if !containsWeekday(p.Weekdays, weekday) {
+		if !containsWeekday(w.Weekdays, local.Weekday()) {
 			continue
 		}
-
-		from, err := parseHHMM(p.From, local, loc)
+		from, err := parseHHMM(w.From, local, loc)
 		if err != nil {
 			continue
 		}
-
-		until, err := parseHHMM(p.Until, local, loc)
+		until, err := parseHHMM(w.Until, local, loc)
 		if err != nil {
 			continue
 		}
-
 		if !local.Before(from) && local.Before(until) {
 			return true, until
 		}
 	}
-
 	return false, time.Time{}
 }
 
-// nextIgnoreWindowStart returns the next time any ignore window will begin.
-func nextIgnoreWindowStart(periods []greencostsv1alpha1.IgnorePeriod, now time.Time) time.Time {
+// nextAvailabilityWindowStart returns the next time any availability window begins.
+func nextAvailabilityWindowStart(windows []greencostsv1alpha1.AvailabilityWindow, now time.Time) time.Time {
 	var earliest time.Time
-
-	for _, p := range periods {
-		loc, err := time.LoadLocation(p.Timezone)
+	for _, w := range windows {
+		loc, err := time.LoadLocation(w.Timezone)
 		if err != nil {
 			continue
 		}
-
 		local := now.In(loc)
-
 		for daysAhead := 0; daysAhead <= 7; daysAhead++ {
 			candidate := local.AddDate(0, 0, daysAhead)
-			if !containsWeekday(p.Weekdays, candidate.Weekday()) {
+			if !containsWeekday(w.Weekdays, candidate.Weekday()) {
 				continue
 			}
-
-			from, err := parseHHMM(p.From, candidate, loc)
+			from, err := parseHHMM(w.From, candidate, loc)
 			if err != nil {
 				continue
 			}
-
 			if from.After(now) {
 				if earliest.IsZero() || from.Before(earliest) {
 					earliest = from
@@ -369,7 +473,6 @@ func nextIgnoreWindowStart(periods []greencostsv1alpha1.IgnorePeriod, now time.T
 			}
 		}
 	}
-
 	return earliest
 }
 
@@ -403,20 +506,27 @@ func weekdayFromSpec(w greencostsv1alpha1.Weekday) time.Weekday {
 	}
 }
 
-func (r *HibernatePolicyReconciler) setHPErrorCondition(ctx context.Context, base *greencostsv1alpha1.HibernatePolicy, hp *greencostsv1alpha1.HibernatePolicy, err error) (ctrl.Result, error) {
-	hp.Status.Conditions = setCondition(hp.Status.Conditions, metav1.Condition{
-		Type:               conditionTypeReady,
-		Status:             metav1.ConditionFalse,
-		Reason:             conditionReasonError,
-		Message:            err.Error(),
-		LastTransitionTime: metav1.Now(),
-	})
+// ── Shared utilities ──────────────────────────────────────────────────────────
 
-	if updateErr := r.Status().Patch(ctx, hp, client.MergeFrom(base)); updateErr != nil {
-		return ctrl.Result{}, fmt.Errorf("updating error condition (original: %w): %v", err, updateErr)
+func parseOriginalReplicas(s string, fallback int) int {
+	if s == "" {
+		return fallback
 	}
+	v, err := strconv.Atoi(s)
+	if err != nil || v < 0 {
+		return fallback
+	}
+	return v
+}
 
-	return ctrl.Result{RequeueAfter: retryShort}, nil
+// isOwnedByDeployment returns true if the ReplicaSet has a Deployment owner reference.
+func isOwnedByDeployment(rs *appsv1.ReplicaSet) bool {
+	for _, ref := range rs.OwnerReferences {
+		if ref.Kind == "Deployment" {
+			return true
+		}
+	}
+	return false
 }
 
 // SetupWithManager registers the controller.
@@ -426,16 +536,3 @@ func (r *HibernatePolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Named("hibernatepolicy").
 		Complete(r)
 }
-
-func defaultDuration(d *metav1.Duration, fallback time.Duration) time.Duration {
-	if d == nil {
-		return fallback
-	}
-	return d.Duration
-}
-
-// Ensure resource package is used for the Quantity comparisons.
-var _ = resource.MustParse("0")
-
-// Ensure labels package is used.
-var _ = labels.Everything()

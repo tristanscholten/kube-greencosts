@@ -4,4 +4,5 @@ resources:
 - greencosts_v1alpha1_energypricesource_entsoe.yaml
 - greencosts_v1alpha1_energyawarecronjob.yaml
 - greencosts_v1alpha1_hibernatepolicy.yaml
+- greencosts_v1alpha1_clusterhibernatepolicy.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

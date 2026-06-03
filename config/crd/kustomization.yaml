@@ -5,6 +5,7 @@ resources:
 - bases/greencosts.hstr.nl_energypricesources.yaml
 - bases/greencosts.hstr.nl_energyawarecronjobs.yaml
 - bases/greencosts.hstr.nl_hibernatepolicies.yaml
+- bases/greencosts.hstr.nl_clusterhibernatepolicies.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

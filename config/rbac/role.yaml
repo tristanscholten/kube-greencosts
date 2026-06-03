@@ -22,7 +22,10 @@ rules:
 - apiGroups:
   - apps
   resources:
+  - daemonsets
   - deployments
+  - replicasets
+  - statefulsets
   verbs:
   - get
   - list
@@ -44,6 +47,7 @@ rules:
 - apiGroups:
   - greencosts.hstr.nl
   resources:
+  - clusterhibernatepolicies
   - energyawarecronjobs
   - energypricesources
   - hibernatepolicies
@@ -58,6 +62,7 @@ rules:
 - apiGroups:
   - greencosts.hstr.nl
   resources:
+  - clusterhibernatepolicies/finalizers
   - energyawarecronjobs/finalizers
   - energypricesources/finalizers
   - hibernatepolicies/finalizers
@@ -66,6 +71,7 @@ rules:
 - apiGroups:
   - greencosts.hstr.nl
   resources:
+  - clusterhibernatepolicies/status
   - energyawarecronjobs/status
   - energypricesources/status
   - hibernatepolicies/status

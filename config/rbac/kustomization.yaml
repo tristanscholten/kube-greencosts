@@ -25,6 +25,9 @@ resources:
 - hibernatepolicy_admin_role.yaml
 - hibernatepolicy_editor_role.yaml
 - hibernatepolicy_viewer_role.yaml
+- clusterhibernatepolicy_admin_role.yaml
+- clusterhibernatepolicy_editor_role.yaml
+- clusterhibernatepolicy_viewer_role.yaml
 - energyawarecronjob_admin_role.yaml
 - energyawarecronjob_editor_role.yaml
 - energyawarecronjob_viewer_role.yaml

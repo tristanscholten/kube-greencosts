@@ -4,17 +4,17 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.18.0
-  name: hibernatepolicies.greencosts.hstr.nl
+  name: clusterhibernatepolicies.greencosts.hstr.nl
 spec:
   group: greencosts.hstr.nl
   names:
-    kind: HibernatePolicy
-    listKind: HibernatePolicyList
-    plural: hibernatepolicies
+    kind: ClusterHibernatePolicy
+    listKind: ClusterHibernatePolicyList
+    plural: clusterhibernatepolicies
     shortNames:
-    - hp
-    singular: hibernatepolicy
-  scope: Namespaced
+    - chp
+    singular: clusterhibernatepolicy
+  scope: Cluster
   versions:
   - additionalPrinterColumns:
     - jsonPath: .status.hibernatedWorkloads
@@ -27,9 +27,9 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          HibernatePolicy is the Schema for the hibernatepolicies API.
-          It is namespace-scoped and hibernates all workloads of the configured types
-          within its own namespace outside of the configured availability windows.
+          ClusterHibernatePolicy is the Schema for the clusterhibernate policies API.
+          It is cluster-scoped and applies to workloads that carry the annotation
+          greencosts.hstr.nl/clusterhibernatepolicy=<name>.
         properties:
           apiVersion:
             description: |-
@@ -49,7 +49,14 @@ spec:
           metadata:
             type: object
           spec:
-            description: HibernatePolicySpec defines the desired state of HibernatePolicy.
+            description: "ClusterHibernatePolicySpec defines the desired state of
+              ClusterHibernatePolicy.\n\nA ClusterHibernatePolicy is not configured
+              for specific workload types; instead\nit is attached to individual workloads
+              or namespaces via the annotation\n\n\tgreencosts.hstr.nl/clusterhibernatepolicy:
+              \"<policy-name>\"\n\nWhen the annotation is placed on a Namespace, all
+              Deployments, StatefulSets,\nDaemonSets and ReplicaSets inside that namespace
+              are governed by the policy.\nWhen placed on an individual workload resource,
+              only that resource is governed."
             properties:
               action:
                 description: Action defines what the controller does when hibernating
@@ -115,30 +122,15 @@ spec:
                   - weekdays
                   type: object
                 type: array
-              workloadTypes:
-                description: |-
-                  WorkloadTypes lists the workload kinds this policy will hibernate.
-                  At least one type must be specified.
-                items:
-                  description: WorkloadType identifies a supported Kubernetes workload
-                    kind.
-                  enum:
-                  - Deployment
-                  - StatefulSet
-                  - DaemonSet
-                  - ReplicaSet
-                  type: string
-                minItems: 1
-                type: array
             required:
             - action
-            - workloadTypes
             type: object
           status:
-            description: HibernatePolicyStatus defines the observed state of HibernatePolicy.
+            description: ClusterHibernatePolicyStatus defines the observed state of
+              ClusterHibernatePolicy.
             properties:
               conditions:
-                description: Conditions reflect the current state of the HibernatePolicy
+                description: Conditions reflect the current state of the ClusterHibernatePolicy
                   reconciliation.
                 items:
                   description: Condition contains details for one aspect of the current
@@ -200,8 +192,8 @@ spec:
                 x-kubernetes-list-type: map
               hibernatedWorkloads:
                 description: |-
-                  HibernatedWorkloads lists the workloads (Kind/name) currently scaled to
-                  zero by this policy.
+                  HibernatedWorkloads lists the workloads (namespace/Kind/name) currently
+                  scaled to zero by this policy.
                 items:
                   type: string
                 type: array

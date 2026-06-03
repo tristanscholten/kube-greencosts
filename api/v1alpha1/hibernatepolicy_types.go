@@ -17,7 +17,6 @@ limitations under the License.
 package v1alpha1
 
 import (
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -35,8 +34,20 @@ const (
 	Sunday    Weekday = "Sun"
 )
 
-// IgnorePeriod defines a recurring time window during which hibernation is suppressed.
-type IgnorePeriod struct {
+// WorkloadType identifies a supported Kubernetes workload kind.
+// +kubebuilder:validation:Enum=Deployment;StatefulSet;DaemonSet;ReplicaSet
+type WorkloadType string
+
+const (
+	WorkloadTypeDeployment  WorkloadType = "Deployment"
+	WorkloadTypeStatefulSet WorkloadType = "StatefulSet"
+	WorkloadTypeDaemonSet   WorkloadType = "DaemonSet"
+	WorkloadTypeReplicaSet  WorkloadType = "ReplicaSet"
+)
+
+// AvailabilityWindow defines a recurring time window during which hibernation is
+// suppressed and any hibernated workloads are restored.
+type AvailabilityWindow struct {
 	// Weekdays lists the days of the week this window applies to.
 	// +kubebuilder:validation:MinItems=1
 	Weekdays []Weekday `json:"weekdays"`
@@ -54,41 +65,15 @@ type IgnorePeriod struct {
 	Timezone string `json:"timezone"`
 }
 
-// HibernateSelector describes which namespaces are governed by this policy.
-type HibernateSelector struct {
-	// NamespaceSelector selects namespaces by label expressions.
-	NamespaceSelector metav1.LabelSelector `json:"namespaceSelector"`
-}
-
-// IdleDetection defines thresholds that determine when a namespace is considered idle.
-type IdleDetection struct {
-	// NoIngressRequestsFor is how long the namespace must have received zero
-	// ingress HTTP requests before it is considered idle.
-	// +optional
-	NoIngressRequestsFor *metav1.Duration `json:"noIngressRequestsFor,omitempty"`
-
-	// CPUBelow is the total CPU usage threshold below which the namespace is
-	// considered idle (queried from the metrics-server).
-	// +optional
-	CPUBelow *resource.Quantity `json:"cpuBelow,omitempty"`
-
-	// NetworkBelow is the total network throughput threshold below which the
-	// namespace is considered idle (queried from Prometheus).
-	// +optional
-	NetworkBelow *resource.Quantity `json:"networkBelow,omitempty"`
-
-	// IgnoreDuring lists time windows during which hibernation is suppressed.
-	// Namespaces that were scaled down will be restored at the start of a window.
-	// +optional
-	IgnoreDuring []IgnorePeriod `json:"ignoreDuring,omitempty"`
-}
-
-// HibernateAction describes what happens when a namespace is determined to be idle.
+// HibernateAction describes what the controller does when hibernating workloads.
 type HibernateAction struct {
-	// ScaleDeploymentsToZero scales all Deployments in matching namespaces to
-	// zero replicas. Original replica counts are preserved in an annotation.
+	// ScaleToZero scales all selected workloads to zero replicas.
+	// For Deployments, StatefulSets and ReplicaSets the original replica count is
+	// preserved in the annotation greencosts.hstr.nl/original-replicas.
+	// For DaemonSets a non-schedulable nodeSelector is injected and the original
+	// nodeSelector is preserved in the annotation greencosts.hstr.nl/original-nodeselector.
 	// +optional
-	ScaleDeploymentsToZero bool `json:"scaleDeploymentsToZero,omitempty"`
+	ScaleToZero bool `json:"scaleToZero,omitempty"`
 
 	// SnapshotPVCs creates a VolumeSnapshot for every PersistentVolumeClaim in
 	// the namespace before scaling down.
@@ -98,23 +83,26 @@ type HibernateAction struct {
 
 // HibernatePolicySpec defines the desired state of HibernatePolicy.
 type HibernatePolicySpec struct {
-	// Selector identifies which namespaces this policy governs.
-	Selector HibernateSelector `json:"selector"`
+	// WorkloadTypes lists the workload kinds this policy will hibernate.
+	// At least one type must be specified.
+	// +kubebuilder:validation:MinItems=1
+	WorkloadTypes []WorkloadType `json:"workloadTypes"`
 
-	// IdleDetection configures the conditions under which a namespace is
-	// declared idle.
-	IdleDetection IdleDetection `json:"idleDetection"`
+	// AvailabilityWindows lists recurring time windows during which hibernation
+	// is suppressed. Hibernated workloads are restored at the start of each window.
+	// +optional
+	AvailabilityWindows []AvailabilityWindow `json:"availabilityWindows,omitempty"`
 
-	// Action defines what the controller does when idle conditions are met.
+	// Action defines what the controller does when hibernating workloads.
 	Action HibernateAction `json:"action"`
 }
 
 // HibernatePolicyStatus defines the observed state of HibernatePolicy.
 type HibernatePolicyStatus struct {
-	// HibernatedNamespaces lists the namespaces currently scaled to zero by
-	// this policy.
+	// HibernatedWorkloads lists the workloads (Kind/name) currently scaled to
+	// zero by this policy.
 	// +optional
-	HibernatedNamespaces []string `json:"hibernatedNamespaces,omitempty"`
+	HibernatedWorkloads []string `json:"hibernatedWorkloads,omitempty"`
 
 	// Conditions reflect the current state of the HibernatePolicy reconciliation.
 	// +optional
@@ -127,11 +115,13 @@ type HibernatePolicyStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:scope=Cluster,shortName=hp
-// +kubebuilder:printcolumn:name="Hibernated",type=integer,JSONPath=`.status.hibernatedNamespaces`
+// +kubebuilder:resource:scope=Namespaced,shortName=hp
+// +kubebuilder:printcolumn:name="Hibernated",type=integer,JSONPath=`.status.hibernatedWorkloads`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // HibernatePolicy is the Schema for the hibernatepolicies API.
+// It is namespace-scoped and hibernates all workloads of the configured types
+// within its own namespace outside of the configured availability windows.
 type HibernatePolicy struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
