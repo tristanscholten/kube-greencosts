@@ -67,6 +67,29 @@ spec:
         imagePullPolicy: Always
         name: manager
         ports: []
+        env:
+          # ── OpenTelemetry tracing ────────────────────────────────────────────
+          # Tracing is always active. The operator exports spans via OTLP gRPC.
+          # Set OTEL_EXPORTER_OTLP_ENDPOINT to point at your collector.
+          # If unreachable, spans are silently dropped — the operator keeps running.
+          # Disable tracing entirely: OTEL_TRACES_SAMPLER=always_off
+          #
+          # - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          #   value: "http://otel-collector.monitoring:4317"
+          #
+          # Optional: add cluster label to all spans
+          # - name: OTEL_RESOURCE_ATTRIBUTES
+          #   value: "k8s.cluster.name=production"
+          #
+          # Optional: reduce to 10 % sampling
+          # - name: OTEL_TRACES_SAMPLER
+          #   value: "parentbased_traceidratio"
+          # - name: OTEL_TRACES_SAMPLER_ARG
+          #   value: "0.1"
+          #
+          # Optional: bearer token for hosted backends (e.g. Grafana Cloud)
+          # - name: OTEL_EXPORTER_OTLP_HEADERS
+          #   value: "Authorization=Bearer <token>"
         securityContext:
           allowPrivilegeEscalation: false
           capabilities:

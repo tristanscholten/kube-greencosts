@@ -24,6 +24,10 @@ import (
 
 	"github.com/robfig/cron/v3"
 	"github.com/samber/oops"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -58,7 +62,20 @@ type EnergyPriceSourceReconciler struct {
 // +kubebuilder:rbac:groups=greencosts.hstr.nl,resources=energypricesources/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get
 
-func (r *EnergyPriceSourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *EnergyPriceSourceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res ctrl.Result, retErr error) {
+	ctx, span := otel.Tracer(controllerTracer).Start(ctx, "EnergyPriceSource.Reconcile",
+		trace.WithAttributes(
+			attribute.String("k8s.resource.name", req.Name),
+			attribute.String("k8s.resource.namespace", req.Namespace),
+		))
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		}
+		span.End()
+	}()
+
 	log := logf.FromContext(ctx)
 
 	var eps greencostsv1alpha1.EnergyPriceSource
@@ -97,10 +114,15 @@ func (r *EnergyPriceSourceReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 
 	// ── Resolve provider token from Secret ───────────────────────────────────
+	_, tokenSpan := otel.Tracer(controllerTracer).Start(ctx, "EnergyPriceSource.resolveToken")
 	token, err := r.resolveToken(ctx, &eps)
 	if err != nil {
+		tokenSpan.RecordError(err)
+		tokenSpan.SetStatus(codes.Error, err.Error())
+		tokenSpan.End()
 		return r.setErrorCondition(ctx, base, &eps, err)
 	}
+	tokenSpan.End()
 
 	// ── Fetch prices ──────────────────────────────────────────────────────────
 	provider, err := r.Registry.Get(eps.Spec.Provider, eps.Spec, token)
@@ -108,15 +130,21 @@ func (r *EnergyPriceSourceReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return r.setErrorCondition(ctx, base, &eps, fmt.Errorf("getting provider %q: %w", eps.Spec.Provider, err))
 	}
 
+	_, fetchSpan := otel.Tracer(controllerTracer).Start(ctx, "EnergyPriceSource.fetchPrices",
+		trace.WithAttributes(attribute.String("provider", eps.Spec.Provider)))
 	prices, err := provider.FetchPrices(ctx, providers.FetchPricesRequest{
 		BiddingZone: eps.Spec.BiddingZone,
 		Date:        time.Now(),
 	})
 	if err != nil {
 		slog.Error("fetching energy prices", "source", req.NamespacedName, "error", err)
+		fetchSpan.RecordError(err)
+		fetchSpan.SetStatus(codes.Error, err.Error())
+		fetchSpan.End()
 		return r.setErrorCondition(ctx, base, &eps,
 			oops.Wrapf(err, "fetching prices from provider %q", eps.Spec.Provider))
 	}
+	fetchSpan.End()
 
 	// ── Update status ─────────────────────────────────────────────────────────
 	now := metav1.Now()
@@ -130,9 +158,14 @@ func (r *EnergyPriceSourceReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		LastTransitionTime: now,
 	})
 
+	_, patchSpan := otel.Tracer(controllerTracer).Start(ctx, "EnergyPriceSource.patchStatus")
 	if err := r.Status().Patch(ctx, &eps, client.MergeFrom(base)); err != nil {
+		patchSpan.RecordError(err)
+		patchSpan.SetStatus(codes.Error, err.Error())
+		patchSpan.End()
 		return ctrl.Result{}, fmt.Errorf("updating EnergyPriceSource status: %w", err)
 	}
+	patchSpan.End()
 
 	log.Info("price data refreshed", "intervals", len(prices))
 

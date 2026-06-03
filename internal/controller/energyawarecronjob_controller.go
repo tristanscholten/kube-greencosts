@@ -24,6 +24,10 @@ import (
 	"time"
 
 	cron "github.com/robfig/cron/v3"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -60,7 +64,20 @@ type EnergyAwareCronJobReconciler struct {
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=greencosts.hstr.nl,resources=energypricesources,verbs=get;list;watch
 
-func (r *EnergyAwareCronJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *EnergyAwareCronJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res ctrl.Result, retErr error) {
+	ctx, span := otel.Tracer(controllerTracer).Start(ctx, "EnergyAwareCronJob.Reconcile",
+		trace.WithAttributes(
+			attribute.String("k8s.resource.name", req.Name),
+			attribute.String("k8s.resource.namespace", req.Namespace),
+		))
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		}
+		span.End()
+	}()
+
 	log := logf.FromContext(ctx)
 
 	var eacj greencostsv1alpha1.EnergyAwareCronJob
@@ -230,6 +247,14 @@ func (r *EnergyAwareCronJobReconciler) dispatchJob(
 	eacj *greencostsv1alpha1.EnergyAwareCronJob,
 	now time.Time,
 ) (ctrl.Result, error) {
+	ctx, span := otel.Tracer(controllerTracer).Start(ctx, "EnergyAwareCronJob.dispatchJob",
+		trace.WithAttributes(
+			attribute.String("k8s.resource.name", eacj.Name),
+			attribute.String("k8s.resource.namespace", eacj.Namespace),
+			attribute.String("scheduled_time", now.Format(time.RFC3339)),
+		))
+	defer span.End()
+
 	log := logf.FromContext(ctx)
 
 	// Replace: delete all active jobs before creating the new one.

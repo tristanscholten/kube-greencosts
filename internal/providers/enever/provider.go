@@ -39,6 +39,12 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	greencostsv1alpha1 "github.com/tristanscholten/kube-greencosts/api/v1alpha1"
 	"github.com/tristanscholten/kube-greencosts/internal/providers"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -81,9 +87,14 @@ type Provider struct {
 // supplier is case-insensitive; pass an empty string for raw spot prices.
 func New(token, supplier string) *Provider {
 	return &Provider{
-		token:      token,
-		supplier:   strings.ToUpper(supplier),
-		httpClient: &http.Client{Timeout: requestTimeout},
+		token:    token,
+		supplier: strings.ToUpper(supplier),
+		// otelhttp.NewTransport wraps the default transport so every HTTP call
+		// produces a child span and propagates W3C trace context headers.
+		httpClient: &http.Client{
+			Transport: otelhttp.NewTransport(http.DefaultTransport),
+			Timeout:   requestTimeout,
+		},
 	}
 }
 
@@ -114,7 +125,17 @@ func Factory() providers.ProviderFactory {
 // FetchPrices fetches today's and tomorrow's prices from enever.nl.
 // Tomorrow's data may not be available yet (published ~14:00 CET); in that
 // case a warning is logged and only today's data is returned.
-func (p *Provider) FetchPrices(ctx context.Context, _ providers.FetchPricesRequest) ([]greencostsv1alpha1.PricePoint, error) {
+func (p *Provider) FetchPrices(ctx context.Context, _ providers.FetchPricesRequest) (pts []greencostsv1alpha1.PricePoint, retErr error) {
+	ctx, span := otel.Tracer("greencosts.hstr.nl/providers").Start(ctx, "enever.FetchPrices",
+		trace.WithAttributes(attribute.String("provider", ProviderName)))
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		}
+		span.End()
+	}()
+
 	today, err := p.fetchDay(ctx, "vandaag")
 	if err != nil {
 		return nil, fmt.Errorf("fetching today's enever prices: %w", err)
@@ -137,7 +158,17 @@ func (p *Provider) FetchPrices(ctx context.Context, _ providers.FetchPricesReque
 }
 
 // fetchDay fetches prices for a single day. day must be "vandaag" or "morgen".
-func (p *Provider) fetchDay(ctx context.Context, day string) ([]greencostsv1alpha1.PricePoint, error) {
+func (p *Provider) fetchDay(ctx context.Context, day string) (pts []greencostsv1alpha1.PricePoint, retErr error) {
+	ctx, span := otel.Tracer("greencosts.hstr.nl/providers").Start(ctx, "enever.fetchDay",
+		trace.WithAttributes(attribute.String("day", day)))
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		}
+		span.End()
+	}()
+
 	// The enever.nl API requires the token in the URL query string.
 	url := fmt.Sprintf("%s/stroomprijs_%s.php?token=%s&resolution=15", baseURL, day, p.token)
 

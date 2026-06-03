@@ -17,10 +17,12 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"os"
 	"path/filepath"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -43,6 +45,7 @@ import (
 	"github.com/tristanscholten/kube-greencosts/internal/providers/custom"
 	"github.com/tristanscholten/kube-greencosts/internal/providers/enever"
 	"github.com/tristanscholten/kube-greencosts/internal/providers/entsoe"
+	"github.com/tristanscholten/kube-greencosts/internal/telemetry"
 	greencostswebhook "github.com/tristanscholten/kube-greencosts/internal/webhook"
 	// +kubebuilder:scaffold:imports
 )
@@ -96,6 +99,23 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	// ── OpenTelemetry tracing ─────────────────────────────────────────────────
+	// Opt-in: set OTEL_EXPORTER_OTLP_ENDPOINT to enable. No-op when unset.
+	// See https://opentelemetry.io/docs/concepts/sdk-configuration/otlp-exporter-configuration/
+	otelCtx := ctrl.SetupSignalHandler()
+	otelShutdown, err := telemetry.Setup(otelCtx)
+	if err != nil {
+		setupLog.Error(err, "failed to initialise OpenTelemetry")
+		os.Exit(1)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if shutdownErr := otelShutdown(shutdownCtx); shutdownErr != nil {
+			setupLog.Error(shutdownErr, "flushing OpenTelemetry traces")
+		}
+	}()
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -279,7 +299,7 @@ func main() {
 	}
 
 	setupLog.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(otelCtx); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}

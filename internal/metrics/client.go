@@ -26,6 +26,10 @@ import (
 	prometheusapi "github.com/prometheus/client_golang/api"
 	prometheusv1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	"github.com/prometheus/common/model"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	metricsv1beta1 "k8s.io/metrics/pkg/apis/metrics/v1beta1"
@@ -72,7 +76,17 @@ func NewClient(metricsClient metricsclientset.Interface, prometheusURL string) (
 }
 
 // QueryNamespaceCPU sums CPU usage across all pods in the namespace.
-func (c *compositeClient) QueryNamespaceCPU(ctx context.Context, namespace string) (resource.Quantity, error) {
+func (c *compositeClient) QueryNamespaceCPU(ctx context.Context, namespace string) (qty resource.Quantity, retErr error) {
+	_, span := otel.Tracer("greencosts.hstr.nl/metrics").Start(ctx, "metrics.QueryNamespaceCPU",
+		trace.WithAttributes(attribute.String("k8s.namespace.name", namespace)))
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		}
+		span.End()
+	}()
+
 	podMetricsList, err := c.metricsClient.MetricsV1beta1().PodMetricses(namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return resource.Quantity{}, fmt.Errorf("listing pod metrics for namespace %q: %w", namespace, err)
@@ -102,7 +116,20 @@ func addPodCPU(total *resource.Quantity, pm *metricsv1beta1.PodMetrics) {
 //
 //	sum(rate(container_network_transmit_bytes_total{namespace="<ns>"}[<window>])
 //	  + rate(container_network_receive_bytes_total{namespace="<ns>"}[<window>]))
-func (c *compositeClient) QueryNamespaceNetwork(ctx context.Context, namespace string, window time.Duration) (resource.Quantity, error) {
+func (c *compositeClient) QueryNamespaceNetwork(ctx context.Context, namespace string, window time.Duration) (qty resource.Quantity, retErr error) {
+	_, span := otel.Tracer("greencosts.hstr.nl/metrics").Start(ctx, "metrics.QueryNamespaceNetwork",
+		trace.WithAttributes(
+			attribute.String("k8s.namespace.name", namespace),
+			attribute.String("window", window.String()),
+		))
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		}
+		span.End()
+	}()
+
 	if c.promAPI == nil {
 		return resource.Quantity{}, nil
 	}
@@ -119,9 +146,9 @@ func (c *compositeClient) QueryNamespaceNetwork(ctx context.Context, namespace s
 	}
 
 	bytesPerSec := scalarValue(val)
-	qty := resource.NewMilliQuantity(int64(bytesPerSec*1000), resource.BinarySI)
+	q := resource.NewMilliQuantity(int64(bytesPerSec*1000), resource.BinarySI)
 
-	return *qty, nil
+	return *q, nil
 }
 
 // QueryNamespaceIngressRPS queries Prometheus for the average HTTP
@@ -131,7 +158,20 @@ func (c *compositeClient) QueryNamespaceNetwork(ctx context.Context, namespace s
 // PromQL used (nginx-ingress compatible):
 //
 //	sum(rate(nginx_ingress_controller_requests{namespace="<ns>"}[<window>]))
-func (c *compositeClient) QueryNamespaceIngressRPS(ctx context.Context, namespace string, window time.Duration) (float64, error) {
+func (c *compositeClient) QueryNamespaceIngressRPS(ctx context.Context, namespace string, window time.Duration) (rps float64, retErr error) {
+	_, span := otel.Tracer("greencosts.hstr.nl/metrics").Start(ctx, "metrics.QueryNamespaceIngressRPS",
+		trace.WithAttributes(
+			attribute.String("k8s.namespace.name", namespace),
+			attribute.String("window", window.String()),
+		))
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		}
+		span.End()
+	}()
+
 	if c.promAPI == nil {
 		return 0, nil
 	}

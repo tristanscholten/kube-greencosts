@@ -23,6 +23,10 @@ import (
 	"fmt"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -37,6 +41,32 @@ import (
 
 	greencostsv1alpha1 "github.com/tristanscholten/kube-greencosts/api/v1alpha1"
 )
+
+// workloadKindFilter builds a set of WorkloadTypes from a slice for O(1) lookup.
+func workloadKindFilter(types []greencostsv1alpha1.WorkloadType) map[greencostsv1alpha1.WorkloadType]struct{} {
+	m := make(map[greencostsv1alpha1.WorkloadType]struct{}, len(types))
+	for _, t := range types {
+		m[t] = struct{}{}
+	}
+	return m
+}
+
+// kindAllowed returns true when the ref's Kind is permitted by the policy's
+// IncludedResources / ExcludedResources filters.
+func kindAllowed(ref workloadRef, spec greencostsv1alpha1.ClusterHibernatePolicySpec) bool {
+	wt := greencostsv1alpha1.WorkloadType(ref.Kind)
+	if len(spec.IncludedResources) > 0 {
+		filter := workloadKindFilter(spec.IncludedResources)
+		_, ok := filter[wt]
+		return ok
+	}
+	if len(spec.ExcludedResources) > 0 {
+		filter := workloadKindFilter(spec.ExcludedResources)
+		_, excluded := filter[wt]
+		return !excluded
+	}
+	return true
+}
 
 // AnnotationClusterHibernatePolicy is the annotation placed on workloads or
 // namespaces to opt-in to a specific ClusterHibernatePolicy.
@@ -67,8 +97,21 @@ type ClusterHibernatePolicyReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;update;patch
 
-func (r *ClusterHibernatePolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *ClusterHibernatePolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res ctrl.Result, retErr error) {
+	ctx, span := otel.Tracer(controllerTracer).Start(ctx, "ClusterHibernatePolicy.Reconcile",
+		trace.WithAttributes(
+			attribute.String("k8s.resource.name", req.Name),
+		))
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		}
+		span.End()
+	}()
+
 	var chp greencostsv1alpha1.ClusterHibernatePolicy
 	if err := r.Get(ctx, req.NamespacedName, &chp); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -82,7 +125,7 @@ func (r *ClusterHibernatePolicyReconciler) Reconcile(ctx context.Context, req ct
 	inWindow, windowEnd := isInAvailabilityWindow(chp.Spec.AvailabilityWindows, now)
 
 	// ── Collect all workloads governed by this policy ─────────────────────────
-	refs, err := r.collectWorkloads(ctx, chp.Name)
+	refs, err := r.collectWorkloads(ctx, chp.Name, chp.Spec)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("collecting workloads for ClusterHibernatePolicy %s: %w", chp.Name, err)
 	}
@@ -90,16 +133,18 @@ func (r *ClusterHibernatePolicyReconciler) Reconcile(ctx context.Context, req ct
 	hibernated := []string{}
 	var errs []error
 
+	actionSet := chp.Spec.Action.SleepDaemonSet || chp.Spec.Action.MaxReplicas != nil
+
 	for _, ref := range refs {
 		if inWindow {
 			if err := r.wakeWorkload(ctx, ref); err != nil {
 				errs = append(errs, fmt.Errorf("waking %s: %w", ref, err))
 			}
 		} else {
-			if !chp.Spec.Action.ScaleToZero {
+			if !actionSet {
 				continue
 			}
-			wasHibernated, err := r.hibernateWorkload(ctx, ref)
+			wasHibernated, err := r.hibernateWorkload(ctx, ref, chp.Spec.Action)
 			if err != nil {
 				errs = append(errs, fmt.Errorf("hibernating %s: %w", ref, err))
 				continue
@@ -148,14 +193,34 @@ func (r *ClusterHibernatePolicyReconciler) Reconcile(ctx context.Context, req ct
 
 // ── Workload collection ───────────────────────────────────────────────────────
 
-// collectWorkloads returns all workloads that reference this policy via annotation.
-// Workloads that are inside an annotated namespace are also included.
+// collectWorkloads returns all workloads governed by this policy via annotation.
+// Namespace-annotated workloads are included but those annotated with a different
+// policy name are skipped (workload annotation takes precedence over namespace).
+// Kind filters from IncludedResources/ExcludedResources are applied afterward.
 // Results are deduplicated by (namespace/kind/name).
-func (r *ClusterHibernatePolicyReconciler) collectWorkloads(ctx context.Context, policyName string) ([]workloadRef, error) {
+func (r *ClusterHibernatePolicyReconciler) collectWorkloads(
+	ctx context.Context,
+	policyName string,
+	spec greencostsv1alpha1.ClusterHibernatePolicySpec,
+) (refs []workloadRef, retErr error) {
+	_, span := otel.Tracer(controllerTracer).Start(ctx, "ClusterHibernatePolicy.collectWorkloads",
+		trace.WithAttributes(attribute.String("policy.name", policyName)))
+	defer func() {
+		span.SetAttributes(attribute.Int("workload.count", len(refs)))
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		}
+		span.End()
+	}()
+
 	seen := map[string]struct{}{}
-	refs := []workloadRef{}
+	refs = []workloadRef{}
 
 	add := func(ref workloadRef) {
+		if !kindAllowed(ref, spec) {
+			return
+		}
 		if _, ok := seen[ref.String()]; !ok {
 			seen[ref.String()] = struct{}{}
 			refs = append(refs, ref)
@@ -171,7 +236,7 @@ func (r *ClusterHibernatePolicyReconciler) collectWorkloads(ctx context.Context,
 		if ns.Annotations[AnnotationClusterHibernatePolicy] != policyName {
 			continue
 		}
-		nsRefs, err := r.allWorkloadsInNamespace(ctx, ns.Name)
+		nsRefs, err := r.allWorkloadsInNamespace(ctx, ns.Name, policyName)
 		if err != nil {
 			return nil, err
 		}
@@ -239,7 +304,13 @@ func (r *ClusterHibernatePolicyReconciler) collectWorkloads(ctx context.Context,
 }
 
 // allWorkloadsInNamespace returns workloadRefs for all four types in a namespace.
-func (r *ClusterHibernatePolicyReconciler) allWorkloadsInNamespace(ctx context.Context, namespace string) ([]workloadRef, error) {
+// Workloads that carry the annotation pointing to a different policy are skipped;
+// their own annotation takes precedence over the namespace-level policy.
+func (r *ClusterHibernatePolicyReconciler) allWorkloadsInNamespace(
+	ctx context.Context,
+	namespace string,
+	policyName string,
+) ([]workloadRef, error) {
 	refs := []workloadRef{}
 
 	var deploys appsv1.DeploymentList
@@ -247,6 +318,10 @@ func (r *ClusterHibernatePolicyReconciler) allWorkloadsInNamespace(ctx context.C
 		return nil, fmt.Errorf("listing Deployments in %q: %w", namespace, err)
 	}
 	for _, d := range deploys.Items {
+		annVal := d.Annotations[AnnotationClusterHibernatePolicy]
+		if annVal != "" && annVal != policyName {
+			continue // governed by its own policy
+		}
 		refs = append(refs, workloadRef{Namespace: namespace, Kind: "Deployment", Name: d.Name})
 	}
 
@@ -255,6 +330,10 @@ func (r *ClusterHibernatePolicyReconciler) allWorkloadsInNamespace(ctx context.C
 		return nil, fmt.Errorf("listing StatefulSets in %q: %w", namespace, err)
 	}
 	for _, s := range sts.Items {
+		annVal := s.Annotations[AnnotationClusterHibernatePolicy]
+		if annVal != "" && annVal != policyName {
+			continue
+		}
 		refs = append(refs, workloadRef{Namespace: namespace, Kind: "StatefulSet", Name: s.Name})
 	}
 
@@ -263,6 +342,10 @@ func (r *ClusterHibernatePolicyReconciler) allWorkloadsInNamespace(ctx context.C
 		return nil, fmt.Errorf("listing DaemonSets in %q: %w", namespace, err)
 	}
 	for _, ds := range dss.Items {
+		annVal := ds.Annotations[AnnotationClusterHibernatePolicy]
+		if annVal != "" && annVal != policyName {
+			continue
+		}
 		refs = append(refs, workloadRef{Namespace: namespace, Kind: "DaemonSet", Name: ds.Name})
 	}
 
@@ -271,9 +354,14 @@ func (r *ClusterHibernatePolicyReconciler) allWorkloadsInNamespace(ctx context.C
 		return nil, fmt.Errorf("listing ReplicaSets in %q: %w", namespace, err)
 	}
 	for _, rs := range rss.Items {
-		if !isOwnedByDeployment(&rs) {
-			refs = append(refs, workloadRef{Namespace: namespace, Kind: "ReplicaSet", Name: rs.Name})
+		if isOwnedByDeployment(&rs) {
+			continue
 		}
+		annVal := rs.Annotations[AnnotationClusterHibernatePolicy]
+		if annVal != "" && annVal != policyName {
+			continue
+		}
+		refs = append(refs, workloadRef{Namespace: namespace, Kind: "ReplicaSet", Name: rs.Name})
 	}
 
 	return refs, nil
@@ -281,9 +369,13 @@ func (r *ClusterHibernatePolicyReconciler) allWorkloadsInNamespace(ctx context.C
 
 // ── Per-workload hibernate/wake ───────────────────────────────────────────────
 
-// hibernateWorkload scales down a single workload identified by ref.
+// hibernateWorkload scales down a single workload identified by ref according to action.
 // Returns true if the workload was (or is already) hibernated.
-func (r *ClusterHibernatePolicyReconciler) hibernateWorkload(ctx context.Context, ref workloadRef) (bool, error) {
+func (r *ClusterHibernatePolicyReconciler) hibernateWorkload(
+	ctx context.Context,
+	ref workloadRef,
+	action greencostsv1alpha1.HibernateAction,
+) (bool, error) {
 	switch ref.Kind {
 	case "Deployment":
 		var d appsv1.Deployment
@@ -293,18 +385,27 @@ func (r *ClusterHibernatePolicyReconciler) hibernateWorkload(ctx context.Context
 		if d.Annotations[annotationHibernated] == "true" {
 			return true, nil
 		}
-		replicas := int32(1)
+		current := int32(1)
 		if d.Spec.Replicas != nil {
-			replicas = *d.Spec.Replicas
+			current = *d.Spec.Replicas
+		}
+		target, shouldScale := computeTargetReplicas(action, current)
+		if !shouldScale {
+			return false, nil
 		}
 		if d.Annotations == nil {
 			d.Annotations = map[string]string{}
 		}
-		d.Annotations[annotationOriginalReplicas] = fmt.Sprintf("%d", replicas)
+		d.Annotations[annotationOriginalReplicas] = fmt.Sprintf("%d", current)
 		d.Annotations[annotationHibernated] = "true"
-		zero := int32(0)
-		d.Spec.Replicas = &zero
-		return true, r.Update(ctx, &d)
+		d.Spec.Replicas = &target
+		if err := r.Update(ctx, &d); err != nil {
+			return false, err
+		}
+		if err := suspendHPA(ctx, r.Client, ref.Namespace, "Deployment", ref.Name, target); err != nil {
+			return true, err
+		}
+		return true, nil
 
 	case "StatefulSet":
 		var s appsv1.StatefulSet
@@ -314,20 +415,34 @@ func (r *ClusterHibernatePolicyReconciler) hibernateWorkload(ctx context.Context
 		if s.Annotations[annotationHibernated] == "true" {
 			return true, nil
 		}
-		replicas := int32(1)
+		current := int32(1)
 		if s.Spec.Replicas != nil {
-			replicas = *s.Spec.Replicas
+			current = *s.Spec.Replicas
+		}
+		target, shouldScale := computeTargetReplicas(action, current)
+		if !shouldScale {
+			return false, nil
 		}
 		if s.Annotations == nil {
 			s.Annotations = map[string]string{}
 		}
-		s.Annotations[annotationOriginalReplicas] = fmt.Sprintf("%d", replicas)
+		s.Annotations[annotationOriginalReplicas] = fmt.Sprintf("%d", current)
 		s.Annotations[annotationHibernated] = "true"
-		zero := int32(0)
-		s.Spec.Replicas = &zero
-		return true, r.Update(ctx, &s)
+		s.Spec.Replicas = &target
+		if err := r.Update(ctx, &s); err != nil {
+			return false, err
+		}
+		if err := suspendHPA(ctx, r.Client, ref.Namespace, "StatefulSet", ref.Name, target); err != nil {
+			return true, err
+		}
+		return true, nil
 
 	case "DaemonSet":
+		// DaemonSets are hibernated only when SleepDaemonSet is true.
+		// MaxReplicas never applies to DaemonSets.
+		if !action.SleepDaemonSet {
+			return false, nil
+		}
 		var ds appsv1.DaemonSet
 		if err := r.Get(ctx, types.NamespacedName{Namespace: ref.Namespace, Name: ref.Name}, &ds); err != nil {
 			return false, client.IgnoreNotFound(err)
@@ -357,18 +472,27 @@ func (r *ClusterHibernatePolicyReconciler) hibernateWorkload(ctx context.Context
 		if rs.Annotations[annotationHibernated] == "true" {
 			return true, nil
 		}
-		replicas := int32(1)
+		current := int32(1)
 		if rs.Spec.Replicas != nil {
-			replicas = *rs.Spec.Replicas
+			current = *rs.Spec.Replicas
+		}
+		target, shouldScale := computeTargetReplicas(action, current)
+		if !shouldScale {
+			return false, nil
 		}
 		if rs.Annotations == nil {
 			rs.Annotations = map[string]string{}
 		}
-		rs.Annotations[annotationOriginalReplicas] = fmt.Sprintf("%d", replicas)
+		rs.Annotations[annotationOriginalReplicas] = fmt.Sprintf("%d", current)
 		rs.Annotations[annotationHibernated] = "true"
-		zero := int32(0)
-		rs.Spec.Replicas = &zero
-		return true, r.Update(ctx, &rs)
+		rs.Spec.Replicas = &target
+		if err := r.Update(ctx, &rs); err != nil {
+			return false, err
+		}
+		if err := suspendHPA(ctx, r.Client, ref.Namespace, "ReplicaSet", ref.Name, target); err != nil {
+			return true, err
+		}
+		return true, nil
 	}
 	return false, nil
 }
@@ -384,6 +508,9 @@ func (r *ClusterHibernatePolicyReconciler) wakeWorkload(ctx context.Context, ref
 		if d.Annotations[annotationHibernated] != "true" {
 			return nil
 		}
+		if err := restoreHPA(ctx, r.Client, ref.Namespace, "Deployment", ref.Name); err != nil {
+			return err
+		}
 		orig := parseOriginalReplicas(d.Annotations[annotationOriginalReplicas], 1)
 		replicas := int32(orig)
 		d.Spec.Replicas = &replicas
@@ -398,6 +525,9 @@ func (r *ClusterHibernatePolicyReconciler) wakeWorkload(ctx context.Context, ref
 		}
 		if s.Annotations[annotationHibernated] != "true" {
 			return nil
+		}
+		if err := restoreHPA(ctx, r.Client, ref.Namespace, "StatefulSet", ref.Name); err != nil {
+			return err
 		}
 		orig := parseOriginalReplicas(s.Annotations[annotationOriginalReplicas], 1)
 		replicas := int32(orig)
@@ -432,6 +562,9 @@ func (r *ClusterHibernatePolicyReconciler) wakeWorkload(ctx context.Context, ref
 		}
 		if rs.Annotations[annotationHibernated] != "true" {
 			return nil
+		}
+		if err := restoreHPA(ctx, r.Client, ref.Namespace, "ReplicaSet", ref.Name); err != nil {
+			return err
 		}
 		orig := parseOriginalReplicas(rs.Annotations[annotationOriginalReplicas], 1)
 		replicas := int32(orig)

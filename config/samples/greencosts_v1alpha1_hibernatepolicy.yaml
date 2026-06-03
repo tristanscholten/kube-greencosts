@@ -22,6 +22,11 @@ spec:
       timezone: "Europe/Amsterdam"
 
   # action describes what happens when a workload is hibernated.
+  #
+  # sleepDaemonSet hibernates DaemonSets only (nodeSelector injection).
+  # maxReplicas caps Deployments, StatefulSets and ReplicaSets; set to 0 to
+  # scale them completely to zero. Both fields can be used at the same time.
   action:
-    scaleToZero: true
-    # snapshotPVCs: true  # Uncomment to take VolumeSnapshots before scaling down
+    sleepDaemonSet: true   # hibernates DaemonSets listed in workloadTypes
+    maxReplicas: 0         # scales Deployments/StatefulSets/ReplicaSets to zero
+    # maxReplicas: 2       # alternative: cap at 2 replicas instead of zero

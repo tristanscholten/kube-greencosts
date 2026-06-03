@@ -24,6 +24,10 @@ import (
 	"strconv"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -61,10 +65,24 @@ type HibernatePolicyReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=autoscaling,resources=horizontalpodautoscalers,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=snapshot.storage.k8s.io,resources=volumesnapshots,verbs=create;list;watch
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims,verbs=get;list;watch
 
-func (r *HibernatePolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *HibernatePolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res ctrl.Result, retErr error) {
+	ctx, span := otel.Tracer(controllerTracer).Start(ctx, "HibernatePolicy.Reconcile",
+		trace.WithAttributes(
+			attribute.String("k8s.resource.name", req.Name),
+			attribute.String("k8s.resource.namespace", req.Namespace),
+		))
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		}
+		span.End()
+	}()
+
 	log := logf.FromContext(ctx)
 
 	var hp greencostsv1alpha1.HibernatePolicy
@@ -145,17 +163,21 @@ func (r *HibernatePolicyReconciler) hibernateWorkloadType(
 	wt greencostsv1alpha1.WorkloadType,
 	action greencostsv1alpha1.HibernateAction,
 ) ([]string, error) {
-	if !action.ScaleToZero {
+	actionSet := action.SleepDaemonSet || action.MaxReplicas != nil
+	if !actionSet {
 		return nil, nil
 	}
 	switch wt {
 	case greencostsv1alpha1.WorkloadTypeDeployment:
-		return r.hibernateDeployments(ctx, namespace)
+		return r.hibernateDeployments(ctx, namespace, action)
 	case greencostsv1alpha1.WorkloadTypeStatefulSet:
-		return r.hibernateStatefulSets(ctx, namespace)
+		return r.hibernateStatefulSets(ctx, namespace, action)
 	case greencostsv1alpha1.WorkloadTypeReplicaSet:
-		return r.hibernateReplicaSets(ctx, namespace)
+		return r.hibernateReplicaSets(ctx, namespace, action)
 	case greencostsv1alpha1.WorkloadTypeDaemonSet:
+		if !action.SleepDaemonSet {
+			return nil, nil // DaemonSets are only hibernated when sleepDaemonSet is true; MaxReplicas never applies
+		}
 		return r.hibernateDaemonSets(ctx, namespace)
 	}
 	return nil, nil
@@ -181,7 +203,11 @@ func (r *HibernatePolicyReconciler) wakeWorkloadType(
 
 // ── Deployments ───────────────────────────────────────────────────────────────
 
-func (r *HibernatePolicyReconciler) hibernateDeployments(ctx context.Context, namespace string) ([]string, error) {
+func (r *HibernatePolicyReconciler) hibernateDeployments(
+	ctx context.Context,
+	namespace string,
+	action greencostsv1alpha1.HibernateAction,
+) ([]string, error) {
 	var list appsv1.DeploymentList
 	if err := r.List(ctx, &list, client.InNamespace(namespace)); err != nil {
 		return nil, fmt.Errorf("listing Deployments in %q: %w", namespace, err)
@@ -193,19 +219,25 @@ func (r *HibernatePolicyReconciler) hibernateDeployments(ctx context.Context, na
 			hibernated = append(hibernated, "Deployment/"+d.Name)
 			continue
 		}
-		replicas := int32(1)
+		current := int32(1)
 		if d.Spec.Replicas != nil {
-			replicas = *d.Spec.Replicas
+			current = *d.Spec.Replicas
+		}
+		target, shouldScale := computeTargetReplicas(action, current)
+		if !shouldScale {
+			continue
 		}
 		if d.Annotations == nil {
 			d.Annotations = map[string]string{}
 		}
-		d.Annotations[annotationOriginalReplicas] = strconv.Itoa(int(replicas))
+		d.Annotations[annotationOriginalReplicas] = strconv.Itoa(int(current))
 		d.Annotations[annotationHibernated] = "true"
-		zero := int32(0)
-		d.Spec.Replicas = &zero
+		d.Spec.Replicas = &target
 		if err := r.Update(ctx, d); err != nil {
-			return hibernated, fmt.Errorf("scaling Deployment %s/%s to zero: %w", namespace, d.Name, err)
+			return hibernated, fmt.Errorf("scaling Deployment %s/%s: %w", namespace, d.Name, err)
+		}
+		if err := suspendHPA(ctx, r.Client, namespace, "Deployment", d.Name, target); err != nil {
+			return hibernated, err
 		}
 		hibernated = append(hibernated, "Deployment/"+d.Name)
 	}
@@ -222,6 +254,9 @@ func (r *HibernatePolicyReconciler) wakeDeployments(ctx context.Context, namespa
 		if d.Annotations[annotationHibernated] != "true" {
 			continue
 		}
+		if err := restoreHPA(ctx, r.Client, namespace, "Deployment", d.Name); err != nil {
+			return err
+		}
 		orig := parseOriginalReplicas(d.Annotations[annotationOriginalReplicas], 1)
 		replicas := int32(orig)
 		d.Spec.Replicas = &replicas
@@ -236,7 +271,11 @@ func (r *HibernatePolicyReconciler) wakeDeployments(ctx context.Context, namespa
 
 // ── StatefulSets ──────────────────────────────────────────────────────────────
 
-func (r *HibernatePolicyReconciler) hibernateStatefulSets(ctx context.Context, namespace string) ([]string, error) {
+func (r *HibernatePolicyReconciler) hibernateStatefulSets(
+	ctx context.Context,
+	namespace string,
+	action greencostsv1alpha1.HibernateAction,
+) ([]string, error) {
 	var list appsv1.StatefulSetList
 	if err := r.List(ctx, &list, client.InNamespace(namespace)); err != nil {
 		return nil, fmt.Errorf("listing StatefulSets in %q: %w", namespace, err)
@@ -248,19 +287,25 @@ func (r *HibernatePolicyReconciler) hibernateStatefulSets(ctx context.Context, n
 			hibernated = append(hibernated, "StatefulSet/"+s.Name)
 			continue
 		}
-		replicas := int32(1)
+		current := int32(1)
 		if s.Spec.Replicas != nil {
-			replicas = *s.Spec.Replicas
+			current = *s.Spec.Replicas
+		}
+		target, shouldScale := computeTargetReplicas(action, current)
+		if !shouldScale {
+			continue
 		}
 		if s.Annotations == nil {
 			s.Annotations = map[string]string{}
 		}
-		s.Annotations[annotationOriginalReplicas] = strconv.Itoa(int(replicas))
+		s.Annotations[annotationOriginalReplicas] = strconv.Itoa(int(current))
 		s.Annotations[annotationHibernated] = "true"
-		zero := int32(0)
-		s.Spec.Replicas = &zero
+		s.Spec.Replicas = &target
 		if err := r.Update(ctx, s); err != nil {
-			return hibernated, fmt.Errorf("scaling StatefulSet %s/%s to zero: %w", namespace, s.Name, err)
+			return hibernated, fmt.Errorf("scaling StatefulSet %s/%s: %w", namespace, s.Name, err)
+		}
+		if err := suspendHPA(ctx, r.Client, namespace, "StatefulSet", s.Name, target); err != nil {
+			return hibernated, err
 		}
 		hibernated = append(hibernated, "StatefulSet/"+s.Name)
 	}
@@ -277,6 +322,9 @@ func (r *HibernatePolicyReconciler) wakeStatefulSets(ctx context.Context, namesp
 		if s.Annotations[annotationHibernated] != "true" {
 			continue
 		}
+		if err := restoreHPA(ctx, r.Client, namespace, "StatefulSet", s.Name); err != nil {
+			return err
+		}
 		orig := parseOriginalReplicas(s.Annotations[annotationOriginalReplicas], 1)
 		replicas := int32(orig)
 		s.Spec.Replicas = &replicas
@@ -291,7 +339,11 @@ func (r *HibernatePolicyReconciler) wakeStatefulSets(ctx context.Context, namesp
 
 // ── ReplicaSets ───────────────────────────────────────────────────────────────
 
-func (r *HibernatePolicyReconciler) hibernateReplicaSets(ctx context.Context, namespace string) ([]string, error) {
+func (r *HibernatePolicyReconciler) hibernateReplicaSets(
+	ctx context.Context,
+	namespace string,
+	action greencostsv1alpha1.HibernateAction,
+) ([]string, error) {
 	var list appsv1.ReplicaSetList
 	if err := r.List(ctx, &list, client.InNamespace(namespace)); err != nil {
 		return nil, fmt.Errorf("listing ReplicaSets in %q: %w", namespace, err)
@@ -307,19 +359,25 @@ func (r *HibernatePolicyReconciler) hibernateReplicaSets(ctx context.Context, na
 			hibernated = append(hibernated, "ReplicaSet/"+rs.Name)
 			continue
 		}
-		replicas := int32(1)
+		current := int32(1)
 		if rs.Spec.Replicas != nil {
-			replicas = *rs.Spec.Replicas
+			current = *rs.Spec.Replicas
+		}
+		target, shouldScale := computeTargetReplicas(action, current)
+		if !shouldScale {
+			continue
 		}
 		if rs.Annotations == nil {
 			rs.Annotations = map[string]string{}
 		}
-		rs.Annotations[annotationOriginalReplicas] = strconv.Itoa(int(replicas))
+		rs.Annotations[annotationOriginalReplicas] = strconv.Itoa(int(current))
 		rs.Annotations[annotationHibernated] = "true"
-		zero := int32(0)
-		rs.Spec.Replicas = &zero
+		rs.Spec.Replicas = &target
 		if err := r.Update(ctx, rs); err != nil {
-			return hibernated, fmt.Errorf("scaling ReplicaSet %s/%s to zero: %w", namespace, rs.Name, err)
+			return hibernated, fmt.Errorf("scaling ReplicaSet %s/%s: %w", namespace, rs.Name, err)
+		}
+		if err := suspendHPA(ctx, r.Client, namespace, "ReplicaSet", rs.Name, target); err != nil {
+			return hibernated, err
 		}
 		hibernated = append(hibernated, "ReplicaSet/"+rs.Name)
 	}
@@ -338,6 +396,9 @@ func (r *HibernatePolicyReconciler) wakeReplicaSets(ctx context.Context, namespa
 		}
 		if rs.Annotations[annotationHibernated] != "true" {
 			continue
+		}
+		if err := restoreHPA(ctx, r.Client, namespace, "ReplicaSet", rs.Name); err != nil {
+			return err
 		}
 		orig := parseOriginalReplicas(rs.Annotations[annotationOriginalReplicas], 1)
 		replicas := int32(orig)

@@ -66,19 +66,35 @@ type AvailabilityWindow struct {
 }
 
 // HibernateAction describes what the controller does when hibernating workloads.
+//
+// SleepDaemonSet and MaxReplicas target completely different workload types and
+// can therefore be combined freely: SleepDaemonSet hibernates DaemonSets while
+// MaxReplicas caps Deployments, StatefulSets and ReplicaSets.
 type HibernateAction struct {
-	// ScaleToZero scales all selected workloads to zero replicas.
-	// For Deployments, StatefulSets and ReplicaSets the original replica count is
-	// preserved in the annotation greencosts.hstr.nl/original-replicas.
-	// For DaemonSets a non-schedulable nodeSelector is injected and the original
-	// nodeSelector is preserved in the annotation greencosts.hstr.nl/original-nodeselector.
+	// SleepDaemonSet hibernates DaemonSets by injecting a non-schedulable
+	// nodeSelector (greencosts.hstr.nl/hibernate: "true") into every DaemonSet
+	// podTemplate, causing all existing pods to be evicted and no new pods to be
+	// scheduled. The original nodeSelector is preserved in the annotation
+	// greencosts.hstr.nl/original-nodeselector and restored on wake.
+	//
+	// This field has NO effect on Deployments, StatefulSets or ReplicaSets.
+	// Use MaxReplicas (set to 0 or any cap) to hibernate those workload types.
 	// +optional
-	ScaleToZero bool `json:"scaleToZero,omitempty"`
+	// +kubebuilder:default=false
+	SleepDaemonSet bool `json:"sleepDaemonSet,omitempty"`
 
-	// SnapshotPVCs creates a VolumeSnapshot for every PersistentVolumeClaim in
-	// the namespace before scaling down.
+	// MaxReplicas caps each Deployment, StatefulSet and ReplicaSet to the given
+	// replica count during hibernation. Workloads already at or below this value
+	// are left unchanged (no-op). Set to 0 to scale them completely to zero.
+	// When set, any HPA targeting an affected workload is suspended: its
+	// minReplicas and maxReplicas are both clamped to MaxReplicas and the
+	// originals are stored in annotations on the HPA for restoration on wake.
+	//
+	// This field has NO effect on DaemonSets. Use SleepDaemonSet to hibernate
+	// DaemonSets.
 	// +optional
-	SnapshotPVCs bool `json:"snapshotPVCs,omitempty"`
+	// +kubebuilder:validation:Minimum=0
+	MaxReplicas *int32 `json:"maxReplicas,omitempty"`
 }
 
 // HibernatePolicySpec defines the desired state of HibernatePolicy.

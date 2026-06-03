@@ -14,8 +14,57 @@ spec:
       until: "18:00"
       timezone: "Europe/Amsterdam"
 
+  # action describes what happens when a workload is hibernated.
+  #
+  # sleepDaemonSet and maxReplicas target different workload types and can be
+  # combined freely:
+  #
+  #   sleepDaemonSet: true   — hibernates DaemonSets only (nodeSelector injection)
+  #   maxReplicas: N         — caps Deployments, StatefulSets and ReplicaSets to N replicas;
+  #                            set to 0 to scale them completely to zero.
+  #
+  # Using both together is valid and recommended when you want full namespace hibernation.
   action:
-    scaleToZero: true
+    sleepDaemonSet: true
+    maxReplicas: 0
+
+  # includedResources restricts the policy to only the listed workload kinds.
+  # Mutually exclusive with excludedResources.
+  # includedResources:
+  #   - Deployment
+  #   - StatefulSet
+
+  # excludedResources prevents the policy from affecting the listed workload kinds.
+  # Mutually exclusive with includedResources.
+  # excludedResources:
+  #   - DaemonSet
+
+---
+apiVersion: greencosts.hstr.nl/v1alpha1
+kind: ClusterHibernatePolicy
+metadata:
+  name: business-hours-capped
+  labels:
+    app.kubernetes.io/name: kube-greencosts
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  availabilityWindows:
+    - weekdays: [Mon, Tue, Wed, Thu, Fri]
+      from: "08:00"
+      until: "18:00"
+      timezone: "Europe/Amsterdam"
+
+  # maxReplicas caps each Deployment, StatefulSet and ReplicaSet to 2 replicas
+  # outside availability windows. Workloads already at or below 2 are unchanged.
+  # HPAs targeting these workloads are suspended during hibernation.
+  # sleepDaemonSet is omitted here — DaemonSets are left running.
+  action:
+    maxReplicas: 2
+
+  # Only Deployments and StatefulSets are affected; DaemonSets and ReplicaSets are skipped.
+  includedResources:
+    - Deployment
+    - StatefulSet
 
 ---
 # Example: apply to a single Deployment by annotation
@@ -23,3 +72,6 @@ spec:
 
 # Example: apply to all workloads in a namespace by annotating the namespace
 # kubectl annotate namespace staging greencosts.hstr.nl/clusterhibernatepolicy=business-hours
+#
+# Note: if a Deployment in that namespace has a different clusterhibernatepolicy annotation,
+# the Deployment's own annotation takes precedence over the namespace annotation.

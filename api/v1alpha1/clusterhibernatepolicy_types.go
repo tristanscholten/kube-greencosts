@@ -30,6 +30,11 @@ import (
 // When the annotation is placed on a Namespace, all Deployments, StatefulSets,
 // DaemonSets and ReplicaSets inside that namespace are governed by the policy.
 // When placed on an individual workload resource, only that resource is governed.
+// If both a namespace and an individual workload carry the annotation, the workload
+// annotation takes precedence — that workload is governed by its own policy, not
+// the namespace-level one.
+//
+// +kubebuilder:validation:XValidation:rule="!(has(self.includedResources) && has(self.excludedResources))",message="includedResources and excludedResources are mutually exclusive"
 type ClusterHibernatePolicySpec struct {
 	// AvailabilityWindows lists recurring time windows during which hibernation
 	// is suppressed. Hibernated workloads are restored at the start of each window.
@@ -38,6 +43,18 @@ type ClusterHibernatePolicySpec struct {
 
 	// Action defines what the controller does when hibernating workloads.
 	Action HibernateAction `json:"action"`
+
+	// IncludedResources restricts the policy to only the listed workload kinds.
+	// When set, workload kinds not listed are never affected by this policy.
+	// Mutually exclusive with ExcludedResources.
+	// +optional
+	IncludedResources []WorkloadType `json:"includedResources,omitempty"`
+
+	// ExcludedResources prevents the policy from affecting the listed workload kinds.
+	// When set, all other workload kinds are still governed by this policy.
+	// Mutually exclusive with IncludedResources.
+	// +optional
+	ExcludedResources []WorkloadType `json:"excludedResources,omitempty"`
 }
 
 // ClusterHibernatePolicyStatus defines the observed state of ClusterHibernatePolicy.

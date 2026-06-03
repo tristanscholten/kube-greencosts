@@ -41,6 +41,12 @@ import (
 	"net/http"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	greencostsv1alpha1 "github.com/tristanscholten/kube-greencosts/api/v1alpha1"
 	"github.com/tristanscholten/kube-greencosts/internal/providers"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -75,7 +81,12 @@ func New(url, bearerToken string) *Provider {
 	return &Provider{
 		url:         url,
 		bearerToken: bearerToken,
-		httpClient:  &http.Client{Timeout: requestTimeout},
+		// otelhttp.NewTransport wraps the default transport so every HTTP call
+		// produces a child span and propagates W3C trace context headers.
+		httpClient: &http.Client{
+			Transport: otelhttp.NewTransport(http.DefaultTransport),
+			Timeout:   requestTimeout,
+		},
 	}
 }
 
@@ -96,7 +107,20 @@ func Factory() providers.ProviderFactory {
 }
 
 // FetchPrices calls the remote API and returns the price points.
-func (p *Provider) FetchPrices(ctx context.Context, req providers.FetchPricesRequest) ([]greencostsv1alpha1.PricePoint, error) {
+func (p *Provider) FetchPrices(ctx context.Context, req providers.FetchPricesRequest) (pts []greencostsv1alpha1.PricePoint, retErr error) {
+	ctx, span := otel.Tracer("greencosts.hstr.nl/providers").Start(ctx, "custom.FetchPrices",
+		trace.WithAttributes(
+			attribute.String("provider", ProviderName),
+			attribute.String("url", p.url),
+		))
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		}
+		span.End()
+	}()
+
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, p.url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("building request for %q: %w", p.url, err)

@@ -34,6 +34,12 @@ import (
 	"net/http"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	greencostsv1alpha1 "github.com/tristanscholten/kube-greencosts/api/v1alpha1"
 	"github.com/tristanscholten/kube-greencosts/internal/providers"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -128,9 +134,14 @@ type Provider struct {
 // New constructs a Provider with the given EIC area code and security token.
 func New(areaCode, token string) *Provider {
 	return &Provider{
-		areaCode:   areaCode,
-		token:      token,
-		httpClient: &http.Client{Timeout: requestTimeout},
+		areaCode: areaCode,
+		token:    token,
+		// otelhttp.NewTransport wraps the default transport so every HTTP call
+		// produces a child span and propagates W3C trace context headers.
+		httpClient: &http.Client{
+			Transport: otelhttp.NewTransport(http.DefaultTransport),
+			Timeout:   requestTimeout,
+		},
 	}
 }
 
@@ -163,7 +174,20 @@ func Factory() providers.ProviderFactory {
 // FetchPrices fetches day-ahead prices for a 48-hour window starting at
 // midnight UTC of the day in req.Date. This ensures next-day prices are
 // available when queried after ~13:00 CET.
-func (p *Provider) FetchPrices(ctx context.Context, req providers.FetchPricesRequest) ([]greencostsv1alpha1.PricePoint, error) {
+func (p *Provider) FetchPrices(ctx context.Context, req providers.FetchPricesRequest) (pts []greencostsv1alpha1.PricePoint, retErr error) {
+	ctx, span := otel.Tracer("greencosts.hstr.nl/providers").Start(ctx, "entsoe.FetchPrices",
+		trace.WithAttributes(
+			attribute.String("provider", ProviderName),
+			attribute.String("area_code", p.areaCode),
+		))
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		}
+		span.End()
+	}()
+
 	dayStart := req.Date.UTC().Truncate(24 * time.Hour)
 	dayEnd := dayStart.Add(48 * time.Hour)
 

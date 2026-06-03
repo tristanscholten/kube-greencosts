@@ -75,6 +75,143 @@ No code changes needed. Add two YAML files to your cluster and start saving.
 
 ---
 
+## Observability
+
+### Prometheus metrics
+
+The operator exposes standard **controller-runtime** metrics at `:8443/metrics` (requires the `metrics-auth` token by default). The metrics endpoint is guarded by RBAC — see `config/rbac/metrics_auth_role.yaml` for the required `ClusterRole`.
+
+Key metrics:
+
+| Metric | Description |
+|--------|-------------|
+| `controller_runtime_reconcile_total` | Total reconcile calls per controller, labelled by `controller` and `result` |
+| `controller_runtime_reconcile_errors_total` | Error count per controller |
+| `controller_runtime_reconcile_time_seconds` | Reconcile latency histogram |
+
+### Distributed tracing
+
+Tracing is **always on**. The operator exports spans via OTLP gRPC to `localhost:4317` by default (the [OTel SDK default](https://opentelemetry.io/docs/specs/otel/protocol/exporter/)). If no collector is reachable the exporter retries silently in the background — the operator keeps running and drops spans without any impact.
+
+Point it at your collector with a single env var:
+
+```yaml
+env:
+  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+    value: "http://<collector-service>.<namespace>:4317"
+```
+
+All standard [OTel SDK environment variables](https://opentelemetry.io/docs/specs/otel/configuration/sdk-environment-variables/) are respected — no code changes needed.
+
+#### Configuration reference
+
+| Environment variable | Default | Description |
+|----------------------|---------|-------------|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | OTLP gRPC collector endpoint |
+| `OTEL_SERVICE_NAME` | `kube-greencosts` | Service name shown in trace UIs |
+| `OTEL_RESOURCE_ATTRIBUTES` | _(unset)_ | Comma-separated extra attributes, e.g. `k8s.cluster.name=prod` |
+| `OTEL_EXPORTER_OTLP_HEADERS` | _(unset)_ | Auth headers, e.g. `Authorization=Bearer <token>` |
+| `OTEL_TRACES_SAMPLER` | `always_on` | Sampler — see values below |
+| `OTEL_TRACES_SAMPLER_ARG` | `1.0` | Ratio for `*_traceidratio` samplers (`0.0`–`1.0`) |
+| `OTEL_EXPORTER_OTLP_INSECURE` | `false` | Set `true` for plain-text gRPC (most in-cluster collectors) |
+
+> **Note:** Most in-cluster collectors (Jaeger all-in-one, OTel Collector, Grafana Agent) listen on plain-text gRPC. Set `OTEL_EXPORTER_OTLP_INSECURE=true` **or** use an `http://` prefix in the endpoint URL.
+
+#### Sampler values
+
+| `OTEL_TRACES_SAMPLER` | Behaviour |
+|-----------------------|-----------|
+| `always_on` _(default)_ | Record every span |
+| `always_off` | Disable tracing entirely — zero overhead |
+| `traceidratio` | Sample `OTEL_TRACES_SAMPLER_ARG` fraction of traces (e.g. `0.1` = 10 %) |
+| `parentbased_always_on` | Always sample; respect parent decision |
+| `parentbased_always_off` | Never sample; respect parent decision |
+| `parentbased_traceidratio` | Ratio-based; respect parent decision _(recommended for production)_ |
+
+#### Quick-start examples
+
+**Jaeger (all-in-one, in-cluster)**
+
+```yaml
+env:
+  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+    value: "http://jaeger.monitoring:4317"
+  - name: OTEL_EXPORTER_OTLP_INSECURE
+    value: "true"
+```
+
+**Grafana Tempo (in-cluster)**
+
+```yaml
+env:
+  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+    value: "http://tempo-distributor.monitoring:4317"
+  - name: OTEL_EXPORTER_OTLP_INSECURE
+    value: "true"
+  - name: OTEL_RESOURCE_ATTRIBUTES
+    value: "k8s.cluster.name=production"
+```
+
+**Grafana Cloud (hosted Tempo)**
+
+```yaml
+env:
+  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+    value: "https://otlp-gateway-prod-eu-west-0.grafana.net/otlp"
+  - name: OTEL_EXPORTER_OTLP_HEADERS
+    value: "Authorization=Bearer <grafana-cloud-token>"
+```
+
+**Production — 10 % sampling**
+
+```yaml
+env:
+  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+    value: "http://otel-collector.monitoring:4317"
+  - name: OTEL_EXPORTER_OTLP_INSECURE
+    value: "true"
+  - name: OTEL_TRACES_SAMPLER
+    value: "parentbased_traceidratio"
+  - name: OTEL_TRACES_SAMPLER_ARG
+    value: "0.1"
+```
+
+**Disable tracing entirely**
+
+```yaml
+env:
+  - name: OTEL_TRACES_SAMPLER
+    value: "always_off"
+```
+
+> All env vars can be uncommented directly from `config/manager/manager.yaml`.
+
+### Span inventory
+
+| Span name | Tracer scope | Key attributes |
+|-----------|-------------|----------------|
+| `EnergyPriceSource.Reconcile` | `greencosts.hstr.nl/controller` | `k8s.resource.name`, `k8s.resource.namespace` |
+| `EnergyPriceSource.resolveToken` | `greencosts.hstr.nl/controller` | — |
+| `EnergyPriceSource.fetchPrices` | `greencosts.hstr.nl/controller` | `provider` |
+| `EnergyPriceSource.patchStatus` | `greencosts.hstr.nl/controller` | — |
+| `EnergyAwareCronJob.Reconcile` | `greencosts.hstr.nl/controller` | `k8s.resource.name`, `k8s.resource.namespace` |
+| `EnergyAwareCronJob.dispatchJob` | `greencosts.hstr.nl/controller` | `k8s.resource.name`, `k8s.resource.namespace`, `scheduled_time` |
+| `HibernatePolicy.Reconcile` | `greencosts.hstr.nl/controller` | `k8s.resource.name`, `k8s.resource.namespace` |
+| `ClusterHibernatePolicy.Reconcile` | `greencosts.hstr.nl/controller` | `k8s.resource.name` |
+| `ClusterHibernatePolicy.collectWorkloads` | `greencosts.hstr.nl/controller` | `policy.name`, `workload.count` |
+| `suspendHPA` | `greencosts.hstr.nl/controller` | `k8s.namespace.name`, `workload.kind`, `workload.name` |
+| `restoreHPA` | `greencosts.hstr.nl/controller` | `k8s.namespace.name`, `workload.kind`, `workload.name` |
+| `enever.FetchPrices` | `greencosts.hstr.nl/providers` | `provider` |
+| `enever.fetchDay` | `greencosts.hstr.nl/providers` | `day` (`vandaag`/`morgen`) |
+| `entsoe.FetchPrices` | `greencosts.hstr.nl/providers` | `provider`, `area_code` |
+| `custom.FetchPrices` | `greencosts.hstr.nl/providers` | `provider`, `url` |
+| HTTP client calls (all providers) | `greencosts.hstr.nl/providers` | Standard `http.*` attributes via `otelhttp` |
+| `metrics.QueryNamespaceCPU` | `greencosts.hstr.nl/metrics` | `k8s.namespace.name` |
+| `metrics.QueryNamespaceNetwork` | `greencosts.hstr.nl/metrics` | `k8s.namespace.name`, `window` |
+| `metrics.QueryNamespaceIngressRPS` | `greencosts.hstr.nl/metrics` | `k8s.namespace.name`, `window` |
+
+---
+
 ## Prerequisites
 
 - Kubernetes ≥ 1.26
@@ -240,43 +377,108 @@ spec:
 
 ### HibernatePolicy (`hp`)
 
-Cluster-scoped policy that scales idle namespaces to zero replicas. Original replica counts are preserved in an annotation and restored when an ignore window begins.
+Namespace-scoped policy that hibernates workloads in the **same namespace** on a recurring schedule. Hibernated workloads are restored at the start of each availability window.
 
 ```yaml
 apiVersion: greencosts.hstr.nl/v1alpha1
 kind: HibernatePolicy
 metadata:
   name: dev-hibernation
+  namespace: my-app
 spec:
-  selector:
-    namespaceSelector:
-      matchLabels:
-        environment: dev
-  idleDetection:
-    cpuBelow: 10m            # idle when total CPU < 10 millicores
-    networkBelow: 1Ki        # idle when network throughput < 1 KB/s
-    noIngressRequestsFor: 30m
-    ignoreDuring:
-      - weekdays: [Mon, Tue, Wed, Thu, Fri]
-        from:  "08:00"
-        until: "18:00"
-        timezone: Europe/Amsterdam
+  # workloadTypes lists which Kubernetes workload kinds this policy hibernates.
+  workloadTypes:
+    - Deployment
+    - StatefulSet
+    - DaemonSet
+
+  # availabilityWindows defines recurring time slots when hibernation is suppressed.
+  # Hibernated workloads are restored at the start of each window.
+  availabilityWindows:
+    - weekdays: [Mon, Tue, Wed, Thu, Fri]
+      from: "08:00"
+      until: "18:00"
+      timezone: Europe/Amsterdam
+
+  # action.sleepDaemonSet and action.maxReplicas target different workload types
+  # and can be freely combined.
   action:
-    scaleDeploymentsToZero: true
-    snapshotPVCs: false
+    # sleepDaemonSet hibernates DaemonSets by injecting a non-schedulable
+    # nodeSelector. The original nodeSelector is restored on wake.
+    # Has NO effect on Deployments, StatefulSets or ReplicaSets.
+    sleepDaemonSet: true
+
+    # maxReplicas caps Deployments, StatefulSets and ReplicaSets to N replicas.
+    # Set to 0 to scale them completely to zero.
+    # Workloads already at or below the cap are left unchanged (no-op).
+    # Any HPA targeting an affected workload is suspended to the same cap and
+    # restored on wake. Has NO effect on DaemonSets.
+    maxReplicas: 0
 ```
 
 | Field | Required | Description |
 |---|---|---|
-| `selector.namespaceSelector` | ✅ | Label selector for namespaces to govern |
-| `idleDetection.cpuBelow` | | CPU threshold (e.g. `10m`) via metrics-server |
-| `idleDetection.networkBelow` | | Network throughput threshold via Prometheus |
-| `idleDetection.noIngressRequestsFor` | | Silence window before idle declaration |
-| `idleDetection.ignoreDuring` | | Recurring windows to suppress hibernation |
-| `action.scaleDeploymentsToZero` | | Scale all Deployments to 0 when idle |
-| `action.snapshotPVCs` | | Snapshot PVCs before scaling down |
+| `workloadTypes` | ✅ | List of workload kinds to hibernate. Valid values: `Deployment`, `StatefulSet`, `DaemonSet`, `ReplicaSet` |
+| `availabilityWindows` | | Recurring windows during which hibernation is suppressed. Workloads are restored at the start of each window |
+| `availabilityWindows[].weekdays` | ✅ | Days this window applies to (`Mon`–`Sun`) |
+| `availabilityWindows[].from` | ✅ | Wall-clock start time (HH:MM) in the given timezone |
+| `availabilityWindows[].until` | ✅ | Wall-clock end time (HH:MM) in the given timezone |
+| `availabilityWindows[].timezone` | | IANA timezone name. Default: `UTC` |
+| `action.sleepDaemonSet` | | Hibernates **DaemonSets only** via nodeSelector injection. Default: `false`. No effect on other workload types |
+| `action.maxReplicas` | | Caps **Deployments, StatefulSets and ReplicaSets** to N replicas. Set to `0` to scale them to zero. HPAs are suspended to the same cap. No effect on DaemonSets |
 
-> **Note:** Network and ingress metrics require a Prometheus instance reachable by the operator. Pass `--prometheus-url=http://prometheus:9090` as a flag to the manager.
+---
+
+### ClusterHibernatePolicy (`chp`)
+
+Cluster-scoped policy that hibernates workloads across multiple namespaces. Workloads opt in via an annotation on the workload itself or on the namespace (namespace annotation governs all pod-deploying resources in that namespace). If a workload annotation points to a different policy than the namespace annotation, **the workload annotation takes precedence**.
+
+```yaml
+apiVersion: greencosts.hstr.nl/v1alpha1
+kind: ClusterHibernatePolicy
+metadata:
+  name: business-hours
+spec:
+  availabilityWindows:
+    - weekdays: [Mon, Tue, Wed, Thu, Fri]
+      from: "08:00"
+      until: "18:00"
+      timezone: Europe/Amsterdam
+
+  # sleepDaemonSet and maxReplicas can be freely combined.
+  action:
+    sleepDaemonSet: true   # hibernate all DaemonSets governed by this policy
+    maxReplicas: 0         # scale all other workloads to zero
+
+  # includedResources restricts the policy to only these workload kinds.
+  # Mutually exclusive with excludedResources.
+  # includedResources:
+  #   - Deployment
+  #   - StatefulSet
+
+  # excludedResources prevents the policy from affecting these workload kinds.
+  # Mutually exclusive with includedResources.
+  # excludedResources:
+  #   - DaemonSet
+```
+
+**Opt-in annotations**
+
+```bash
+# Apply to a single workload
+kubectl annotate deployment my-app greencosts.hstr.nl/clusterhibernatepolicy=business-hours
+
+# Apply to all workloads in a namespace
+kubectl annotate namespace staging greencosts.hstr.nl/clusterhibernatepolicy=business-hours
+```
+
+| Field | Required | Description |
+|---|---|---|
+| `availabilityWindows` | | Same structure as `HibernatePolicy` |
+| `action.sleepDaemonSet` | | Hibernates **DaemonSets only** via nodeSelector injection. Default: `false`. No effect on other workload types |
+| `action.maxReplicas` | | Caps **Deployments, StatefulSets and ReplicaSets** to N replicas. Set to `0` to scale to zero. HPAs are suspended. No effect on DaemonSets |
+| `includedResources` | | Restrict the policy to only these workload kinds. Mutually exclusive with `excludedResources` |
+| `excludedResources` | | Prevent the policy from affecting these workload kinds. Mutually exclusive with `includedResources` |
 
 ---
 
