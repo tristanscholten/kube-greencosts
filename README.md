@@ -230,10 +230,10 @@ git clone https://github.com/tristanscholten/kube-greencosts.git
 cd kube-greencosts
 
 # Build the controller image
-make docker-build IMG=docker.io/tristanscholten/kube-greencosts-controller:latest
+make docker-build
 
 # Install CRDs and deploy the operator to your current kubectl context
-make deploy IMG=docker.io/tristanscholten/kube-greencosts-controller:latest
+make deploy
 ```
 
 ### 2 — Create an API token secret
@@ -611,6 +611,10 @@ go run ./cmd/main.go
 # Run these after type changes when generator tooling is installed.
 make generate && make manifests
 
+# Show or bump the SemVer used for image tags
+make version
+make bump-patch   # or bump-minor / bump-major
+
 # Run unit tests
 make setup-envtest
 make test
@@ -619,9 +623,20 @@ make test
 make test-e2e
 
 # Build and deploy to your current kubectl context
-make docker-build IMG=docker.io/tristanscholten/kube-greencosts-controller:latest
-make deploy IMG=docker.io/tristanscholten/kube-greencosts-controller:latest
+make docker-build
+make deploy
 ```
+
+Image builds use [`VERSION`](VERSION) as the SemVer source of truth. By default
+`make docker-build` tags the image as
+`docker.io/tristanscholten/kube-greencosts-controller:v<version>` and `latest`.
+Override `IMAGE_REPOSITORY`, `IMG` or `IMAGE_TAGS` when publishing elsewhere.
+
+The GitHub Actions workflow in
+[`.github/workflows/container.yml`](.github/workflows/container.yml) builds every
+pull request and pushes Docker Hub images on `main`, `v*.*.*` tags and manual
+dispatches. It expects repository secrets named `DOCKERHUB_USERNAME` and
+`DOCKERHUB_TOKEN`.
 
 ---
 

@@ -1,15 +1,31 @@
 SHELL := /usr/bin/env bash
 
-IMG ?= docker.io/tristanscholten/kube-greencosts-controller:latest
+VERSION_FILE ?= VERSION
+VERSION := $(shell tr -d '[:space:]' < $(VERSION_FILE))
+IMAGE_REPOSITORY ?= docker.io/tristanscholten/kube-greencosts-controller
+IMG ?= $(IMAGE_REPOSITORY):v$(VERSION)
+IMAGE_TAGS ?= $(IMG) $(IMAGE_REPOSITORY):latest
 CONTAINER_TOOL ?= podman
 KUSTOMIZE ?= kubectl kustomize
 KUBECTL ?= kubectl
 ENVTEST_K8S_VERSION ?= 1.33.0
 SETUP_ENVTEST ?= $(HOME)/go/bin/setup-envtest
 
-.PHONY: all test test-unit test-e2e setup-envtest docker-build docker-push install uninstall deploy undeploy manifests generate fmt vet
+.PHONY: all version bump-major bump-minor bump-patch test test-unit test-e2e setup-envtest docker-build docker-push install uninstall deploy undeploy manifests generate fmt vet
 
 all: docker-build
+
+version:
+	@printf '%s\n' "$(VERSION)"
+
+bump-major:
+	bash hack/bump-version.sh major $(VERSION_FILE)
+
+bump-minor:
+	bash hack/bump-version.sh minor $(VERSION_FILE)
+
+bump-patch:
+	bash hack/bump-version.sh patch $(VERSION_FILE)
 
 test: test-unit
 
@@ -24,10 +40,10 @@ setup-envtest:
 	$(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir ./bin/k8s -p path
 
 docker-build:
-	$(CONTAINER_TOOL) build -t $(IMG) .
+	$(CONTAINER_TOOL) build $(foreach tag,$(IMAGE_TAGS),-t $(tag)) .
 
 docker-push:
-	$(CONTAINER_TOOL) push $(IMG)
+	$(foreach tag,$(IMAGE_TAGS),$(CONTAINER_TOOL) push $(tag);)
 
 install:
 	$(KUBECTL) apply -f config/crd/bases
