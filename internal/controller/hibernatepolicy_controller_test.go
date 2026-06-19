@@ -51,7 +51,12 @@ var _ = Describe("HibernatePolicy Controller", func() {
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: greencostsv1alpha1.HibernatePolicySpec{
+						WorkloadTypes: []greencostsv1alpha1.WorkloadType{
+							greencostsv1alpha1.WorkloadTypeDeployment,
+						},
+						Action: greencostsv1alpha1.HibernateAction{},
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}

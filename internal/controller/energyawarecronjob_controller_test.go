@@ -21,6 +21,8 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -51,7 +53,30 @@ var _ = Describe("EnergyAwareCronJob Controller", func() {
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: greencostsv1alpha1.EnergyAwareCronJobSpec{
+						EnergyPriceSource: corev1.LocalObjectReference{Name: "prices"},
+						EnergyStrategy: greencostsv1alpha1.EnergyStrategySpec{
+							Strategy: greencostsv1alpha1.LowestPrice,
+						},
+						CronJob: batchv1.CronJobSpec{
+							Schedule: "0 0 1 1 *",
+							JobTemplate: batchv1.JobTemplateSpec{
+								Spec: batchv1.JobSpec{
+									Template: corev1.PodTemplateSpec{
+										Spec: corev1.PodSpec{
+											Containers: []corev1.Container{
+												{
+													Name:  "worker",
+													Image: "busybox",
+												},
+											},
+											RestartPolicy: corev1.RestartPolicyOnFailure,
+										},
+									},
+								},
+							},
+						},
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}

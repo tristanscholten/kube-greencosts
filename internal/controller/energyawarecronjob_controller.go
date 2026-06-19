@@ -404,20 +404,26 @@ func buildJob(eacj *greencostsv1alpha1.EnergyAwareCronJob, scheduledAt time.Time
 		name = name[len(name)-63:]
 	}
 
-	labels := map[string]string{ownerLabel: eacj.Name}
-	for k, v := range eacj.Spec.CronJob.JobTemplate.Labels {
-		labels[k] = v
-	}
+	labels := copyStringMap(eacj.Spec.CronJob.JobTemplate.Labels)
+	labels[ownerLabel] = eacj.Name
 
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        name,
 			Namespace:   eacj.Namespace,
 			Labels:      labels,
-			Annotations: eacj.Spec.CronJob.JobTemplate.Annotations,
+			Annotations: copyStringMap(eacj.Spec.CronJob.JobTemplate.Annotations),
 		},
 		Spec: eacj.Spec.CronJob.JobTemplate.Spec,
 	}
+}
+
+func copyStringMap(in map[string]string) map[string]string {
+	out := map[string]string{}
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // nextScheduleTime returns the next cron fire time after lastRun.

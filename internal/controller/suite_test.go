@@ -102,15 +102,32 @@ var _ = AfterSuite(func() {
 // properly set up, run 'make setup-envtest' beforehand.
 func getFirstFoundEnvTestBinaryDir() string {
 	basePath := filepath.Join("..", "..", "bin", "k8s")
-	entries, err := os.ReadDir(basePath)
+	var binaryDir string
+	err := filepath.WalkDir(basePath, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if !entry.IsDir() || binaryDir != "" {
+			return nil
+		}
+		if hasEnvTestBinaries(path) {
+			binaryDir = path
+			return filepath.SkipDir
+		}
+		return nil
+	})
 	if err != nil {
-		logf.Log.Error(err, "Failed to read directory", "path", basePath)
-		return ""
+		logf.Log.Error(err, "Failed to search directory", "path", basePath)
 	}
-	for _, entry := range entries {
-		if entry.IsDir() {
-			return filepath.Join(basePath, entry.Name())
+	return binaryDir
+}
+
+func hasEnvTestBinaries(path string) bool {
+	required := []string{"etcd", "kube-apiserver", "kubectl"}
+	for _, name := range required {
+		if _, err := os.Stat(filepath.Join(path, name)); err != nil {
+			return false
 		}
 	}
-	return ""
+	return true
 }

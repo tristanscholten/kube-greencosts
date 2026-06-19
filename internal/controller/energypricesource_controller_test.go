@@ -51,7 +51,16 @@ var _ = Describe("EnergyPriceSource Controller", func() {
 						Name:      resourceName,
 						Namespace: "default",
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: greencostsv1alpha1.EnergyPriceSourceSpec{
+						Provider:        "customProvider",
+						BiddingZone:     "NL",
+						RefreshSchedule: "0 0 1 1 *",
+						Providers: greencostsv1alpha1.ProviderConfig{
+							CustomProviderConfig: &greencostsv1alpha1.CustomProviderConfig{
+								URL: "https://example.com/prices.json",
+							},
+						},
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
