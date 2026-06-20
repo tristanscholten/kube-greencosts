@@ -191,7 +191,7 @@ func (r *EnergyAwareCronJobReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{}, fmt.Errorf("fetching EnergyPriceSource: %w", err)
 	}
 
-	// ── 10. Find cheapest price in window ────────────────────────────────────
+	// ── 10. Find the best price in window ─────────────────────────────────────
 	windowEnd := nextCronTime.Add(eacj.Spec.EnergyStrategy.ScheduleWindow.Duration)
 	window := filterPricesInWindow(eps.Status.Prices, nextCronTime, windowEnd)
 	if len(window) == 0 {
@@ -204,13 +204,11 @@ func (r *EnergyAwareCronJobReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{RequeueAfter: retryShort}, nil
 	}
 
-	cheapest := window[0]
-	for _, p := range window[1:] {
-		if p.EurPerMWh < cheapest.EurPerMWh {
-			cheapest = p
-		}
+	selected, err := selectPricePoint(window, eacj.Spec.EnergyStrategy.Strategy)
+	if err != nil {
+		return r.failWith(ctx, base, &eacj, err)
 	}
-	optimalTime := cheapest.At.Time
+	optimalTime := selected.At.Time
 
 	// Optimal slot is already in the past within the window — fire now.
 	if !optimalTime.After(now) {
@@ -220,7 +218,8 @@ func (r *EnergyAwareCronJobReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// ── 11. Persist optimal time and sleep until it arrives ──────────────────
 	log.Info("optimal time selected",
 		"at", optimalTime.Format(time.RFC3339),
-		"price", cheapest.EurPerMWh)
+		"price", selected.EurPerMWh,
+		"strategy", eacj.Spec.EnergyStrategy.Strategy)
 	next := metav1.NewTime(optimalTime)
 	windowOpen := metav1.NewTime(nextCronTime)
 	eacj.Status.NextCronWindow = &windowOpen
@@ -230,7 +229,7 @@ func (r *EnergyAwareCronJobReconciler) Reconcile(ctx context.Context, req ctrl.R
 		Status: metav1.ConditionTrue,
 		Reason: "Scheduled",
 		Message: fmt.Sprintf("optimally scheduled at %s (%.2f €/MWh)",
-			optimalTime.Format(time.RFC3339), cheapest.EurPerMWh),
+			optimalTime.Format(time.RFC3339), selected.EurPerMWh),
 		LastTransitionTime: metav1.Now(),
 	})
 	if err := r.Status().Patch(ctx, &eacj, client.MergeFrom(base)); err != nil {
@@ -322,7 +321,7 @@ func (r *EnergyAwareCronJobReconciler) syncActiveJobs(
 	var jobList batchv1.JobList
 	if err := r.List(ctx, &jobList,
 		client.InNamespace(eacj.Namespace),
-		client.MatchingLabels{ownerLabel: eacj.Name},
+		client.MatchingLabels{ownerLabel: energyAwareCronJobOwnerLabelValue(eacj.Name)},
 	); err != nil {
 		return fmt.Errorf("listing Jobs for EnergyAwareCronJob %s: %w", eacj.Name, err)
 	}
@@ -399,23 +398,26 @@ func (r *EnergyAwareCronJobReconciler) syncActiveJobs(
 
 // buildJob constructs a batchv1.Job from the EnergyAwareCronJob's cronJob.jobTemplate.
 func buildJob(eacj *greencostsv1alpha1.EnergyAwareCronJob, scheduledAt time.Time) *batchv1.Job {
-	name := fmt.Sprintf("%s-%d", eacj.Name, scheduledAt.Unix())
-	if len(name) > 63 {
-		name = name[len(name)-63:]
-	}
-
 	labels := copyStringMap(eacj.Spec.CronJob.JobTemplate.Labels)
-	labels[ownerLabel] = eacj.Name
+	labels[ownerLabel] = energyAwareCronJobOwnerLabelValue(eacj.Name)
 
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        name,
+			Name:        energyAwareCronJobName(eacj.Name, scheduledAt),
 			Namespace:   eacj.Namespace,
 			Labels:      labels,
 			Annotations: copyStringMap(eacj.Spec.CronJob.JobTemplate.Annotations),
 		},
 		Spec: eacj.Spec.CronJob.JobTemplate.Spec,
 	}
+}
+
+func energyAwareCronJobName(name string, scheduledAt time.Time) string {
+	return shortObjectName(name, name, fmt.Sprintf("-%d", scheduledAt.Unix()))
+}
+
+func energyAwareCronJobOwnerLabelValue(name string) string {
+	return shortLabelValue(name)
 }
 
 func copyStringMap(in map[string]string) map[string]string {
@@ -464,6 +466,37 @@ func filterPricesInWindow(
 		}
 	}
 	return result
+}
+
+func selectPricePoint(
+	prices []greencostsv1alpha1.PricePoint,
+	strategy greencostsv1alpha1.Strategy,
+) (greencostsv1alpha1.PricePoint, error) {
+	if len(prices) == 0 {
+		return greencostsv1alpha1.PricePoint{}, fmt.Errorf("no prices available")
+	}
+
+	if strategy == "" {
+		strategy = greencostsv1alpha1.LowestPrice
+	}
+
+	selected := prices[0]
+	for _, p := range prices[1:] {
+		switch strategy {
+		case greencostsv1alpha1.LowestPrice:
+			if p.EurPerMWh < selected.EurPerMWh {
+				selected = p
+			}
+		case greencostsv1alpha1.HighestPrice:
+			if p.EurPerMWh > selected.EurPerMWh {
+				selected = p
+			}
+		default:
+			return greencostsv1alpha1.PricePoint{}, fmt.Errorf("unsupported energyStrategy.strategy %q", strategy)
+		}
+	}
+
+	return selected, nil
 }
 
 // jobFinished reports whether a Job has reached a terminal state and which condition type it is.

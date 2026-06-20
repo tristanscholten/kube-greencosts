@@ -177,6 +177,55 @@ func LoadImageToKindClusterWithName(name string) error {
 	return err
 }
 
+// LoadImageForE2E loads the locally built image into the configured e2e
+// cluster. E2E_IMAGE_LOADER accepts "auto", "kind", "k3s-container", or "none".
+func LoadImageForE2E(name string) error {
+	loader := os.Getenv("E2E_IMAGE_LOADER")
+	if loader == "" {
+		loader = "auto"
+	}
+
+	switch loader {
+	case "auto":
+		if _, err := exec.LookPath("kind"); err == nil {
+			return LoadImageToKindClusterWithName(name)
+		}
+		return LoadImageToK3sContainerWithName(name)
+	case "kind":
+		return LoadImageToKindClusterWithName(name)
+	case "k3s-container":
+		return LoadImageToK3sContainerWithName(name)
+	case "none":
+		_, _ = fmt.Fprintf(GinkgoWriter, "Skipping image load because E2E_IMAGE_LOADER=none\n")
+		return nil
+	default:
+		return fmt.Errorf("unknown E2E_IMAGE_LOADER %q", loader)
+	}
+}
+
+// LoadImageToK3sContainerWithName imports a local Podman image into a k3s
+// container's containerd image store.
+func LoadImageToK3sContainerWithName(name string) error {
+	container := os.Getenv("E2E_K3S_CONTAINER")
+	if container == "" {
+		container = "openclaw-k3s"
+	}
+
+	cmd := exec.Command("bash", "-c",
+		fmt.Sprintf(
+			"podman save %s | sudo podman exec -i %s ctr images import -",
+			shellQuote(name),
+			shellQuote(container),
+		),
+	)
+	_, err := Run(cmd)
+	return err
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
 // GetNonEmptyLines converts given command output string into individual objects
 // according to line breakers, and ignores the empty elements in it.
 func GetNonEmptyLines(output string) []string {

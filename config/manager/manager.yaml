@@ -64,15 +64,15 @@ spec:
           - --leader-elect
           - --health-probe-bind-address=:8081
         image: docker.io/tristanscholten/kube-greencosts-controller:latest
-        imagePullPolicy: Always
+        imagePullPolicy: IfNotPresent
         name: manager
         ports: []
         env:
           # ── OpenTelemetry tracing ────────────────────────────────────────────
-          # Tracing is always active. The operator exports spans via OTLP gRPC.
-          # Set OTEL_EXPORTER_OTLP_ENDPOINT to point at your collector.
-          # If unreachable, spans are silently dropped — the operator keeps running.
-          # Disable tracing entirely: OTEL_TRACES_SAMPLER=always_off
+          # Tracing is opt-in. Set OTEL_EXPORTER_OTLP_ENDPOINT to point at your
+          # collector. When unset, the operator uses a no-op tracer provider.
+          # To keep the exporter configured but disable span recording:
+          # OTEL_TRACES_SAMPLER=always_off
           #
           # - name: OTEL_EXPORTER_OTLP_ENDPOINT
           #   value: "http://otel-collector.monitoring:4317"

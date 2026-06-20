@@ -24,7 +24,7 @@ import (
 
 // Strategy defines how the optimal run time is selected within the
 // scheduling window.
-// +kubebuilder:validation:Enum=LowestPrice
+// +kubebuilder:validation:Enum=LowestPrice;HighestPrice
 type Strategy string
 
 const (

@@ -224,6 +224,9 @@ func (r *HibernatePolicyReconciler) hibernateDeployments(
 	for i := range list.Items {
 		d := &list.Items[i]
 		if d.Annotations[annotationHibernated] == annotationTrueValue {
+			if err := suspendHPAForAction(ctx, r.Client, namespace, workloadKindDeployment, d.Name, action); err != nil {
+				return hibernated, err
+			}
 			hibernated = append(hibernated, workloadKindDeployment+"/"+d.Name)
 			continue
 		}
@@ -292,6 +295,9 @@ func (r *HibernatePolicyReconciler) hibernateStatefulSets(
 	for i := range list.Items {
 		s := &list.Items[i]
 		if s.Annotations[annotationHibernated] == annotationTrueValue {
+			if err := suspendHPAForAction(ctx, r.Client, namespace, workloadKindStatefulSet, s.Name, action); err != nil {
+				return hibernated, err
+			}
 			hibernated = append(hibernated, workloadKindStatefulSet+"/"+s.Name)
 			continue
 		}
@@ -364,6 +370,9 @@ func (r *HibernatePolicyReconciler) hibernateReplicaSets(
 			continue
 		}
 		if rs.Annotations[annotationHibernated] == annotationTrueValue {
+			if err := suspendHPAForAction(ctx, r.Client, namespace, workloadKindReplicaSet, rs.Name, action); err != nil {
+				return hibernated, err
+			}
 			hibernated = append(hibernated, workloadKindReplicaSet+"/"+rs.Name)
 			continue
 		}

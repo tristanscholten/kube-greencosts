@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -49,8 +50,12 @@ var _ = Describe("Manager", Ordered, func() {
 	// enforce the restricted security policy to the namespace, installing CRDs,
 	// and deploying the controller.
 	BeforeAll(func() {
+		By("removing any previous manager namespace")
+		cmd := exec.Command("kubectl", "delete", "ns", namespace, "--ignore-not-found", "--wait=true")
+		_, _ = utils.Run(cmd)
+
 		By("creating manager namespace")
-		cmd := exec.Command("kubectl", "create", "ns", namespace)
+		cmd = exec.Command("kubectl", "create", "ns", namespace)
 		_, err := utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to create namespace")
 
@@ -171,8 +176,12 @@ var _ = Describe("Manager", Ordered, func() {
 		})
 
 		It("should ensure the metrics endpoint is serving metrics", func() {
+			By("removing any existing metrics ClusterRoleBinding")
+			cmd := exec.Command("kubectl", "delete", "clusterrolebinding", metricsRoleBindingName, "--ignore-not-found")
+			_, _ = utils.Run(cmd)
+
 			By("creating a ClusterRoleBinding for the service account to allow access to metrics")
-			cmd := exec.Command("kubectl", "create", "clusterrolebinding", metricsRoleBindingName,
+			cmd = exec.Command("kubectl", "create", "clusterrolebinding", metricsRoleBindingName,
 				"--clusterrole=kube-greencosts-metrics-reader",
 				fmt.Sprintf("--serviceaccount=%s:%s", namespace, serviceAccountName),
 			)
@@ -219,7 +228,7 @@ var _ = Describe("Manager", Ordered, func() {
 							"name": "curl",
 							"image": "curlimages/curl:latest",
 							"command": ["/bin/sh", "-c"],
-							"args": ["curl -v -k -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local:8443/metrics"],
+							"args": ["curl -sSk -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local:8443/metrics"],
 							"securityContext": {
 								"allowPrivilegeEscalation": false,
 								"capabilities": {
@@ -254,6 +263,301 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(metricsOutput).To(ContainSubstring(
 				"controller_runtime_reconcile_total",
 			))
+		})
+
+		It("should fetch custom prices and create an EnergyAwareCronJob Job", func() {
+			const testNamespace = "kube-greencosts-e2e-prices"
+			createNamespace(testNamespace)
+			DeferCleanup(deleteNamespace, testNamespace)
+
+			priceData := customPriceJSON(time.Now().UTC())
+			applyYAML(testNamespace, fmt.Sprintf(`
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: custom-price-api
+data:
+  index.html: '%s'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: custom-price-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: custom-price-api
+  template:
+    metadata:
+      labels:
+        app: custom-price-api
+    spec:
+      containers:
+      - name: httpd
+        image: busybox:1.36
+        command: ["sh", "-c", "mkdir -p /www && cp /config/index.html /www/index.html && httpd -f -p 8080 -h /www"]
+        ports:
+        - containerPort: 8080
+        volumeMounts:
+        - name: data
+          mountPath: /config
+      volumes:
+      - name: data
+        configMap:
+          name: custom-price-api
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: custom-price-api
+spec:
+  selector:
+    app: custom-price-api
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+`, priceData))
+
+			waitFor("custom price API", func(g Gomega) {
+				output := kubectl("get", "deployment", "custom-price-api", "-n", testNamespace,
+					"-o", "jsonpath={.status.availableReplicas}")
+				g.Expect(output).To(Equal("1"))
+			})
+
+			applyYAML(testNamespace, `
+apiVersion: greencosts.hstr.nl/v1alpha1
+kind: EnergyPriceSource
+metadata:
+  name: custom-prices
+spec:
+  provider: customProvider
+  biddingZone: TEST
+  refreshSchedule: "* * * * *"
+  cacheTTL: 0s
+  providers:
+    customProviderConfig:
+      url: http://custom-price-api.kube-greencosts-e2e-prices.svc.cluster.local:8080
+---
+apiVersion: greencosts.hstr.nl/v1alpha1
+kind: EnergyAwareCronJob
+metadata:
+  name: audit-immediate
+spec:
+  energyPriceSource:
+    name: custom-prices
+  energyStrategy:
+    strategy: HighestPrice
+    estimatedDuration: 0s
+    scheduleWindow: 0s
+  cronJob:
+    schedule: "* * * * *"
+    successfulJobsHistoryLimit: 2
+    failedJobsHistoryLimit: 1
+    jobTemplate:
+      metadata:
+        annotations:
+          audit.greencosts.hstr.nl/template: preserved
+      spec:
+        template:
+          spec:
+            containers:
+            - name: test
+              image: busybox:1.36
+              command: ["sh", "-c", "echo eacj-ok"]
+            restartPolicy: Never
+`)
+
+			waitFor("custom EnergyPriceSource", func(g Gomega) {
+				condition := kubectl("get", "eps", "custom-prices", "-n", testNamespace,
+					"-o", `jsonpath={.status.conditions[?(@.type=="Ready")].status}`)
+				prices := kubectl("get", "eps", "custom-prices", "-n", testNamespace,
+					"-o", "jsonpath={.status.prices[*].eurPerMWh}")
+				g.Expect(condition).To(Equal("True"))
+				g.Expect(prices).To(ContainSubstring("120"))
+			})
+
+			var jobName string
+			Eventually(func(g Gomega) {
+				jobName = kubectl("get", "jobs", "-n", testNamespace,
+					"-l", "greencosts.hstr.nl/owner=audit-immediate",
+					"-o", "go-template={{ range .items }}{{ .metadata.name }}{{ end }}")
+				g.Expect(jobName).NotTo(BeEmpty())
+			}, 100*time.Second, time.Second).Should(Succeed())
+
+			waitFor("EnergyAwareCronJob Job completion", func(g Gomega) {
+				complete := kubectl("get", "job", jobName, "-n", testNamespace,
+					"-o", `jsonpath={.status.conditions[?(@.type=="Complete")].status}`)
+				annotation := kubectl("get", "job", jobName, "-n", testNamespace,
+					"-o", `jsonpath={.metadata.annotations.audit\.greencosts\.hstr\.nl/template}`)
+				g.Expect(complete).To(Equal("True"))
+				g.Expect(annotation).To(Equal("preserved"))
+			})
+		})
+
+		It("should hibernate and wake workloads with a zero-cap HPA", func() {
+			const testNamespace = "kube-greencosts-e2e-hibernate"
+			createNamespace(testNamespace)
+			DeferCleanup(deleteNamespace, testNamespace)
+
+			applyYAML(testNamespace, `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hp-deploy
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: hp-deploy
+  template:
+    metadata:
+      labels:
+        app: hp-deploy
+    spec:
+      containers:
+      - name: pause
+        image: registry.k8s.io/pause:3.10
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: hp-deploy
+spec:
+  minReplicas: 2
+  maxReplicas: 5
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: hp-deploy
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 50
+---
+apiVersion: greencosts.hstr.nl/v1alpha1
+kind: HibernatePolicy
+metadata:
+  name: hp-all
+spec:
+  workloadTypes: [Deployment]
+  action:
+    maxReplicas: 0
+`)
+
+			waitFor("hibernate deployment and detach HPA", func(g Gomega) {
+				replicas := kubectl("get", "deployment", "hp-deploy", "-n", testNamespace,
+					"-o", `jsonpath={.spec.replicas}`)
+				target := kubectl("get", "hpa", "hp-deploy", "-n", testNamespace,
+					"-o", `jsonpath={.spec.scaleTargetRef.name}`)
+				originalTarget := kubectl("get", "hpa", "hp-deploy", "-n", testNamespace,
+					"-o", `jsonpath={.metadata.annotations.greencosts\.hstr\.nl/original-hpa-target-name}`)
+				g.Expect(replicas).To(Equal("0"))
+				g.Expect(target).To(HavePrefix("kube-greencosts-hibernated-"))
+				g.Expect(target).NotTo(Equal("hp-deploy"))
+				g.Expect(len(target)).To(BeNumerically("<=", 63))
+				g.Expect(originalTarget).To(Equal("hp-deploy"))
+			})
+
+			kubectl("patch", "hibernatepolicy", "hp-all", "-n", testNamespace,
+				"--type=merge", "-p", currentAvailabilityWindowPatch())
+
+			waitFor("wake deployment and restore HPA", func(g Gomega) {
+				replicas := kubectl("get", "deployment", "hp-deploy", "-n", testNamespace,
+					"-o", `jsonpath={.spec.replicas}`)
+				target := kubectl("get", "hpa", "hp-deploy", "-n", testNamespace,
+					"-o", `jsonpath={.spec.scaleTargetRef.name}`)
+				originalTarget := kubectl("get", "hpa", "hp-deploy", "-n", testNamespace,
+					"-o", `jsonpath={.metadata.annotations.greencosts\.hstr\.nl/original-hpa-target-name}`)
+				g.Expect(replicas).To(Equal("3"))
+				g.Expect(target).To(Equal("hp-deploy"))
+				g.Expect(originalTarget).To(BeEmpty())
+			})
+		})
+
+		It("should honor ClusterHibernatePolicy annotation precedence", func() {
+			const testNamespace = "kube-greencosts-e2e-cluster"
+			createNamespace(testNamespace)
+			DeferCleanup(deleteNamespace, testNamespace)
+			kubectl("annotate", "namespace", testNamespace,
+				"greencosts.hstr.nl/clusterhibernatepolicy=cluster-sleep", "--overwrite")
+
+			applyYAML(testNamespace, `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ns-deploy
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ns-deploy
+  template:
+    metadata:
+      labels:
+        app: ns-deploy
+    spec:
+      containers:
+      - name: pause
+        image: registry.k8s.io/pause:3.10
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: own-deploy
+  annotations:
+    greencosts.hstr.nl/clusterhibernatepolicy: other-sleep
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: own-deploy
+  template:
+    metadata:
+      labels:
+        app: own-deploy
+    spec:
+      containers:
+      - name: pause
+        image: registry.k8s.io/pause:3.10
+`)
+			applyYAML("", `
+apiVersion: greencosts.hstr.nl/v1alpha1
+kind: ClusterHibernatePolicy
+metadata:
+  name: cluster-sleep
+spec:
+  action:
+    maxReplicas: 0
+---
+apiVersion: greencosts.hstr.nl/v1alpha1
+kind: ClusterHibernatePolicy
+metadata:
+  name: other-sleep
+spec:
+  includedResources: [Deployment]
+  action:
+    maxReplicas: 1
+`)
+			DeferCleanup(func() {
+				kubectl("delete", "chp", "cluster-sleep", "other-sleep", "--ignore-not-found")
+			})
+
+			waitFor("cluster hibernate annotation precedence", func(g Gomega) {
+				nsReplicas := kubectl("get", "deployment", "ns-deploy", "-n", testNamespace,
+					"-o", `jsonpath={.spec.replicas}`)
+				ownReplicas := kubectl("get", "deployment", "own-deploy", "-n", testNamespace,
+					"-o", `jsonpath={.spec.replicas}`)
+				ownOriginal := kubectl("get", "deployment", "own-deploy", "-n", testNamespace,
+					"-o", `jsonpath={.metadata.annotations.greencosts\.hstr\.nl/original-replicas}`)
+				g.Expect(nsReplicas).To(Equal("0"))
+				g.Expect(ownReplicas).To(Equal("1"))
+				g.Expect(ownOriginal).To(Equal("3"))
+			})
 		})
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks
@@ -310,13 +614,63 @@ func serviceAccountToken() (string, error) {
 	return out, err
 }
 
+func createNamespace(name string) {
+	kubectl("delete", "ns", name, "--ignore-not-found", "--wait=true")
+	kubectl("create", "ns", name)
+}
+
+func deleteNamespace(name string) {
+	kubectl("delete", "ns", name, "--ignore-not-found", "--wait=true")
+}
+
+func applyYAML(namespaceName, yaml string) {
+	args := []string{"apply", "--server-side", "--force-conflicts"}
+	if namespaceName != "" {
+		args = append(args, "-n", namespaceName)
+	}
+	args = append(args, "-f", "-")
+	cmd := exec.Command("kubectl", args...)
+	cmd.Stdin = strings.NewReader(yaml)
+	_, err := utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred())
+}
+
+func kubectl(args ...string) string {
+	cmd := exec.Command("kubectl", args...)
+	output, err := utils.Run(cmd)
+	ExpectWithOffset(1, err).NotTo(HaveOccurred())
+	return strings.TrimSpace(output)
+}
+
+func waitFor(name string, assertion func(Gomega)) {
+	By("waiting for " + name)
+	Eventually(assertion, 2*time.Minute, time.Second).Should(Succeed())
+}
+
+func customPriceJSON(now time.Time) string {
+	base := now.Truncate(time.Minute).Add(time.Minute)
+	points := make([]string, 0, 3)
+	for i, price := range []float64{30, 120, 60} {
+		at := base.Add(time.Duration(i) * time.Minute).Format(time.RFC3339)
+		points = append(points, fmt.Sprintf(`{"start":"%s","eurPerMWh":%.0f}`, at, price))
+	}
+	return strings.Join([]string{"[", strings.Join(points, ","), "]"}, "")
+}
+
+func currentAvailabilityWindowPatch() string {
+	weekday := time.Now().UTC().Format("Mon")
+	return fmt.Sprintf(
+		`{"spec":{"availabilityWindows":[{"weekdays":["%s"],"from":"00:00","until":"23:59","timezone":"UTC"}]}}`,
+		weekday,
+	)
+}
+
 // getMetricsOutput retrieves and returns the logs from the curl pod used to access the metrics endpoint.
 func getMetricsOutput() string {
 	By("getting the curl-metrics logs")
 	cmd := exec.Command("kubectl", "logs", "curl-metrics", "-n", namespace)
 	metricsOutput, err := utils.Run(cmd)
 	Expect(err).NotTo(HaveOccurred(), "Failed to retrieve logs from curl pod")
-	Expect(metricsOutput).To(ContainSubstring("< HTTP/1.1 200 OK"))
 	return metricsOutput
 }
 
