@@ -73,6 +73,17 @@ func TestRedactedURLRedactsOnlyConfiguredQueryKeys(t *testing.T) {
 	}
 }
 
+func TestRedactedURLHandlesEmptyInputs(t *testing.T) {
+	if got := redactedURL(nil, []string{"token"}); got != "" {
+		t.Fatalf("redactedURL(nil) = %q, want empty string", got)
+	}
+
+	const raw = "https://example.test/path"
+	if got := redactedURL(mustParseURL(t, raw), []string{"token"}); got != raw {
+		t.Fatalf("redactedURL() = %q, want %q", got, raw)
+	}
+}
+
 func mustParseURL(t *testing.T, raw string) *url.URL {
 	t.Helper()
 	u, err := url.Parse(raw)
