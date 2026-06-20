@@ -125,6 +125,7 @@ func suspendHPA(ctx context.Context, c client.Client, namespace, kind, name stri
 	if hpa.Annotations[annotationOriginalHPAMin] != "" {
 		return nil // already suspended
 	}
+	base := hpa.DeepCopy()
 
 	origMin := int32(1)
 	if hpa.Spec.MinReplicas != nil {
@@ -150,7 +151,7 @@ func suspendHPA(ctx context.Context, c client.Client, namespace, kind, name stri
 		hpa.Spec.MaxReplicas = target
 	}
 
-	if err := c.Update(ctx, hpa); err != nil {
+	if err := c.Patch(ctx, hpa, client.MergeFrom(base)); err != nil {
 		return fmt.Errorf("suspending HPA %s/%s: %w", namespace, hpa.Name, err)
 	}
 	return nil
@@ -188,6 +189,7 @@ func restoreHPA(ctx context.Context, c client.Client, namespace, kind, name stri
 	if hpa.Annotations[annotationOriginalHPAMin] == "" {
 		return nil // not suspended by us
 	}
+	base := hpa.DeepCopy()
 
 	origMin := int32(parseOriginalReplicas(hpa.Annotations[annotationOriginalHPAMin]))
 	origMax := int32(parseOriginalReplicas(hpa.Annotations[annotationOriginalHPAMax]))
@@ -205,7 +207,7 @@ func restoreHPA(ctx context.Context, c client.Client, namespace, kind, name stri
 	delete(hpa.Annotations, annotationOriginalHPATargetKind)
 	delete(hpa.Annotations, annotationOriginalHPATargetName)
 
-	if err := c.Update(ctx, hpa); err != nil {
+	if err := c.Patch(ctx, hpa, client.MergeFrom(base)); err != nil {
 		return fmt.Errorf("restoring HPA %s/%s: %w", namespace, hpa.Name, err)
 	}
 	return nil

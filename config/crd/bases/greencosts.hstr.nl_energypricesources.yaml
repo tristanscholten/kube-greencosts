@@ -229,6 +229,19 @@ spec:
             - cacheTTL
             - provider
             type: object
+            x-kubernetes-validations:
+            - message: provider entsoe requires exactly providers.entsoeConfig
+              rule: 'self.provider == ''entsoe'' ? (has(self.providers) && has(self.providers.entsoeConfig)
+                && !has(self.providers.eneverConfig) && !has(self.providers.customProviderConfig))
+                : true'
+            - message: provider enever requires exactly providers.eneverConfig
+              rule: 'self.provider == ''enever'' ? (has(self.providers) && has(self.providers.eneverConfig)
+                && !has(self.providers.entsoeConfig) && !has(self.providers.customProviderConfig))
+                : true'
+            - message: provider customProvider requires exactly providers.customProviderConfig
+              rule: 'self.provider == ''customProvider'' ? (has(self.providers) &&
+                has(self.providers.customProviderConfig) && !has(self.providers.entsoeConfig)
+                && !has(self.providers.eneverConfig)) : true'
           status:
             description: EnergyPriceSourceStatus defines the observed state of EnergyPriceSource.
             properties:

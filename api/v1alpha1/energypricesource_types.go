@@ -76,6 +76,9 @@ type ProviderConfig struct {
 }
 
 // EnergyPriceSourceSpec defines the desired state of EnergyPriceSource.
+// +kubebuilder:validation:XValidation:rule="self.provider == 'entsoe' ? (has(self.providers) && has(self.providers.entsoeConfig) && !has(self.providers.eneverConfig) && !has(self.providers.customProviderConfig)) : true",message="provider entsoe requires exactly providers.entsoeConfig"
+// +kubebuilder:validation:XValidation:rule="self.provider == 'enever' ? (has(self.providers) && has(self.providers.eneverConfig) && !has(self.providers.entsoeConfig) && !has(self.providers.customProviderConfig)) : true",message="provider enever requires exactly providers.eneverConfig"
+// +kubebuilder:validation:XValidation:rule="self.provider == 'customProvider' ? (has(self.providers) && has(self.providers.customProviderConfig) && !has(self.providers.entsoeConfig) && !has(self.providers.eneverConfig)) : true",message="provider customProvider requires exactly providers.customProviderConfig"
 type EnergyPriceSourceSpec struct {
 	// Provider identifies the energy data provider plugin.
 	// +kubebuilder:validation:Enum=entsoe;enever;customProvider

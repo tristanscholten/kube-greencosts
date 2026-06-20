@@ -39,7 +39,6 @@ import (
 	"strings"
 	"time"
 
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -87,14 +86,9 @@ type Provider struct {
 // supplier is case-insensitive; pass an empty string for raw spot prices.
 func New(token, supplier string) *Provider {
 	return &Provider{
-		token:    token,
-		supplier: strings.ToUpper(supplier),
-		// otelhttp.NewTransport wraps the default transport so every HTTP call
-		// produces a child span and propagates W3C trace context headers.
-		httpClient: &http.Client{
-			Transport: otelhttp.NewTransport(http.DefaultTransport),
-			Timeout:   requestTimeout,
-		},
+		token:      token,
+		supplier:   strings.ToUpper(supplier),
+		httpClient: providers.NewRedactedHTTPClient(requestTimeout, "token"),
 	}
 }
 

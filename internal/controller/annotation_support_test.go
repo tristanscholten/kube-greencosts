@@ -224,6 +224,52 @@ func TestDetachedHPATargetNameStaysShortForLongWorkloadNames(t *testing.T) {
 	}
 }
 
+func TestWakeDeploymentSkipsWorkloadsOwnedByAnotherPolicy(t *testing.T) {
+	ctx := context.Background()
+	s := runtime.NewScheme()
+	if err := scheme.AddToScheme(s); err != nil {
+		t.Fatalf("adding Kubernetes types to scheme: %v", err)
+	}
+
+	replicas := int32(0)
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testWorkerName,
+			Namespace: testDefaultNamespace,
+			Annotations: map[string]string{
+				annotationHibernated:            annotationTrueValue,
+				annotationOriginalReplicas:      "3",
+				annotationHibernatedByKind:      "ClusterHibernatePolicy",
+				annotationHibernatedByName:      "cluster-sleep",
+				annotationHibernatedByNamespace: "",
+			},
+		},
+		Spec: appsv1.DeploymentSpec{Replicas: &replicas},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(deployment).Build()
+	r := &HibernatePolicyReconciler{Client: c}
+
+	err := r.wakeDeployments(ctx, testDefaultNamespace, hibernationOwner{
+		Kind:      "HibernatePolicy",
+		Namespace: testDefaultNamespace,
+		Name:      "namespace-sleep",
+	})
+	if err != nil {
+		t.Fatalf("wakeDeployments() error = %v", err)
+	}
+
+	var got appsv1.Deployment
+	if err := c.Get(ctx, client.ObjectKey{Namespace: testDefaultNamespace, Name: testWorkerName}, &got); err != nil {
+		t.Fatalf("getting deployment: %v", err)
+	}
+	if got.Spec.Replicas == nil || *got.Spec.Replicas != 0 {
+		t.Fatalf("replicas = %v, want still hibernated at 0", got.Spec.Replicas)
+	}
+	if got.Annotations[annotationHibernated] != annotationTrueValue {
+		t.Fatalf("hibernate marker was removed by non-owner: %v", got.Annotations)
+	}
+}
+
 func TestClusterHibernatePolicyCollectsAnnotatedResources(t *testing.T) {
 	ctx := context.Background()
 	s := runtime.NewScheme()

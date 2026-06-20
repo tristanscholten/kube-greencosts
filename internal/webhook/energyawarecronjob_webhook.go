@@ -32,6 +32,8 @@ import (
 	greencostsv1alpha1 "github.com/tristanscholten/kube-greencosts/api/v1alpha1"
 )
 
+const defaultTimezone = "UTC"
+
 // +kubebuilder:webhook:path=/validate-greencosts-hstr-nl-v1alpha1-energyawarecronjob,mutating=false,failurePolicy=fail,sideEffects=None,groups=greencosts.hstr.nl,resources=energyawarecronjobs,verbs=create;update,versions=v1alpha1,name=venergyawarecronjob.kb.io,admissionReviewVersions=v1
 
 // EnergyAwareCronJobCustomValidator validates EnergyAwareCronJob resources.
@@ -98,7 +100,7 @@ func validateEnergyAwareCronJobSpec(eacj *greencostsv1alpha1.EnergyAwareCronJob)
 	// Mirror the controller's timezone handling: prepend TZ= unless the
 	// schedule already carries its own timezone prefix.
 	if !strings.HasPrefix(scheduleStr, "TZ=") && !strings.HasPrefix(scheduleStr, "CRON_TZ=") {
-		tz := "UTC"
+		tz := defaultTimezone
 		if eacj.Spec.CronJob.TimeZone != nil && *eacj.Spec.CronJob.TimeZone != "" {
 			tz = *eacj.Spec.CronJob.TimeZone
 		}
