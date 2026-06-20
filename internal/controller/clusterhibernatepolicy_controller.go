@@ -120,6 +120,10 @@ func (r *ClusterHibernatePolicyReconciler) Reconcile(ctx context.Context, req ct
 		return ctrl.Result{}, fmt.Errorf("fetching ClusterHibernatePolicy %s: %w", req.Name, err)
 	}
 	base := chp.DeepCopy()
+	owner := hibernationOwner{
+		Kind: "ClusterHibernatePolicy",
+		Name: chp.Name,
+	}
 
 	now := time.Now()
 	inWindow, windowEnd := isInAvailabilityWindow(chp.Spec.AvailabilityWindows, now)
@@ -137,14 +141,14 @@ func (r *ClusterHibernatePolicyReconciler) Reconcile(ctx context.Context, req ct
 
 	for _, ref := range refs {
 		if inWindow {
-			if err := r.wakeWorkload(ctx, ref); err != nil {
+			if err := r.wakeWorkload(ctx, ref, owner); err != nil {
 				errs = append(errs, fmt.Errorf("waking %s: %w", ref, err))
 			}
 		} else {
 			if !actionSet {
 				continue
 			}
-			wasHibernated, err := r.hibernateWorkload(ctx, ref, chp.Spec.Action)
+			wasHibernated, err := r.hibernateWorkload(ctx, ref, chp.Spec.Action, owner)
 			if err != nil {
 				errs = append(errs, fmt.Errorf("hibernating %s: %w", ref, err))
 				continue
@@ -371,10 +375,12 @@ func (r *ClusterHibernatePolicyReconciler) allWorkloadsInNamespace(
 
 // hibernateWorkload scales down a single workload identified by ref according to action.
 // Returns true if the workload was (or is already) hibernated.
+// nolint:gocyclo // Per-kind branches keep ownership and restore annotations explicit.
 func (r *ClusterHibernatePolicyReconciler) hibernateWorkload(
 	ctx context.Context,
 	ref workloadRef,
 	action greencostsv1alpha1.HibernateAction,
+	owner hibernationOwner,
 ) (bool, error) {
 	switch ref.Kind {
 	case workloadKindDeployment:
@@ -383,6 +389,9 @@ func (r *ClusterHibernatePolicyReconciler) hibernateWorkload(
 			return false, client.IgnoreNotFound(err)
 		}
 		if d.Annotations[annotationHibernated] == annotationTrueValue {
+			if !ownedBy(d.Annotations, owner) {
+				return false, nil
+			}
 			if err := suspendHPAForAction(ctx, r.Client, ref.Namespace, workloadKindDeployment, ref.Name, action); err != nil {
 				return true, err
 			}
@@ -396,13 +405,14 @@ func (r *ClusterHibernatePolicyReconciler) hibernateWorkload(
 		if !shouldScale {
 			return false, nil
 		}
+		base := d.DeepCopy()
 		if d.Annotations == nil {
 			d.Annotations = map[string]string{}
 		}
 		d.Annotations[annotationOriginalReplicas] = fmt.Sprintf("%d", current)
-		d.Annotations[annotationHibernated] = annotationTrueValue
+		markHibernated(d.Annotations, owner)
 		d.Spec.Replicas = &target
-		if err := r.Update(ctx, &d); err != nil {
+		if err := r.Patch(ctx, &d, client.MergeFrom(base)); err != nil {
 			return false, err
 		}
 		if err := suspendHPA(ctx, r.Client, ref.Namespace, workloadKindDeployment, ref.Name, target); err != nil {
@@ -416,6 +426,9 @@ func (r *ClusterHibernatePolicyReconciler) hibernateWorkload(
 			return false, client.IgnoreNotFound(err)
 		}
 		if s.Annotations[annotationHibernated] == annotationTrueValue {
+			if !ownedBy(s.Annotations, owner) {
+				return false, nil
+			}
 			if err := suspendHPAForAction(ctx, r.Client, ref.Namespace, workloadKindStatefulSet, ref.Name, action); err != nil {
 				return true, err
 			}
@@ -429,13 +442,14 @@ func (r *ClusterHibernatePolicyReconciler) hibernateWorkload(
 		if !shouldScale {
 			return false, nil
 		}
+		base := s.DeepCopy()
 		if s.Annotations == nil {
 			s.Annotations = map[string]string{}
 		}
 		s.Annotations[annotationOriginalReplicas] = fmt.Sprintf("%d", current)
-		s.Annotations[annotationHibernated] = annotationTrueValue
+		markHibernated(s.Annotations, owner)
 		s.Spec.Replicas = &target
-		if err := r.Update(ctx, &s); err != nil {
+		if err := r.Patch(ctx, &s, client.MergeFrom(base)); err != nil {
 			return false, err
 		}
 		if err := suspendHPA(ctx, r.Client, ref.Namespace, workloadKindStatefulSet, ref.Name, target); err != nil {
@@ -454,21 +468,25 @@ func (r *ClusterHibernatePolicyReconciler) hibernateWorkload(
 			return false, client.IgnoreNotFound(err)
 		}
 		if ds.Annotations[annotationHibernated] == annotationTrueValue {
+			if !ownedBy(ds.Annotations, owner) {
+				return false, nil
+			}
 			return true, nil
 		}
 		origJSON, err := marshalNodeSelector(ds.Spec.Template.Spec.NodeSelector)
 		if err != nil {
 			return false, err
 		}
+		base := ds.DeepCopy()
 		if ds.Annotations == nil {
 			ds.Annotations = map[string]string{}
 		}
 		ds.Annotations[annotationOriginalNodeSelector] = origJSON
-		ds.Annotations[annotationHibernated] = annotationTrueValue
+		markHibernated(ds.Annotations, owner)
 		ds.Spec.Template.Spec.NodeSelector = map[string]string{
 			hibernateNodeSelectorKey: hibernateNodeSelectorValue,
 		}
-		return true, r.Update(ctx, &ds)
+		return true, r.Patch(ctx, &ds, client.MergeFrom(base))
 
 	case workloadKindReplicaSet:
 		var rs appsv1.ReplicaSet
@@ -476,6 +494,9 @@ func (r *ClusterHibernatePolicyReconciler) hibernateWorkload(
 			return false, client.IgnoreNotFound(err)
 		}
 		if rs.Annotations[annotationHibernated] == annotationTrueValue {
+			if !ownedBy(rs.Annotations, owner) {
+				return false, nil
+			}
 			if err := suspendHPAForAction(ctx, r.Client, ref.Namespace, workloadKindReplicaSet, ref.Name, action); err != nil {
 				return true, err
 			}
@@ -489,13 +510,14 @@ func (r *ClusterHibernatePolicyReconciler) hibernateWorkload(
 		if !shouldScale {
 			return false, nil
 		}
+		base := rs.DeepCopy()
 		if rs.Annotations == nil {
 			rs.Annotations = map[string]string{}
 		}
 		rs.Annotations[annotationOriginalReplicas] = fmt.Sprintf("%d", current)
-		rs.Annotations[annotationHibernated] = annotationTrueValue
+		markHibernated(rs.Annotations, owner)
 		rs.Spec.Replicas = &target
-		if err := r.Update(ctx, &rs); err != nil {
+		if err := r.Patch(ctx, &rs, client.MergeFrom(base)); err != nil {
 			return false, err
 		}
 		if err := suspendHPA(ctx, r.Client, ref.Namespace, workloadKindReplicaSet, ref.Name, target); err != nil {
@@ -507,7 +529,11 @@ func (r *ClusterHibernatePolicyReconciler) hibernateWorkload(
 }
 
 // wakeWorkload restores a single workload identified by ref.
-func (r *ClusterHibernatePolicyReconciler) wakeWorkload(ctx context.Context, ref workloadRef) error {
+func (r *ClusterHibernatePolicyReconciler) wakeWorkload(
+	ctx context.Context,
+	ref workloadRef,
+	owner hibernationOwner,
+) error {
 	switch ref.Kind {
 	case workloadKindDeployment:
 		var d appsv1.Deployment
@@ -517,15 +543,19 @@ func (r *ClusterHibernatePolicyReconciler) wakeWorkload(ctx context.Context, ref
 		if d.Annotations[annotationHibernated] != annotationTrueValue {
 			return nil
 		}
+		if !ownedBy(d.Annotations, owner) {
+			return nil
+		}
 		if err := restoreHPA(ctx, r.Client, ref.Namespace, workloadKindDeployment, ref.Name); err != nil {
 			return err
 		}
 		orig := parseOriginalReplicas(d.Annotations[annotationOriginalReplicas])
 		replicas := int32(orig)
+		base := d.DeepCopy()
 		d.Spec.Replicas = &replicas
-		delete(d.Annotations, annotationHibernated)
+		clearHibernated(d.Annotations)
 		delete(d.Annotations, annotationOriginalReplicas)
-		return r.Update(ctx, &d)
+		return r.Patch(ctx, &d, client.MergeFrom(base))
 
 	case workloadKindStatefulSet:
 		var s appsv1.StatefulSet
@@ -535,15 +565,19 @@ func (r *ClusterHibernatePolicyReconciler) wakeWorkload(ctx context.Context, ref
 		if s.Annotations[annotationHibernated] != annotationTrueValue {
 			return nil
 		}
+		if !ownedBy(s.Annotations, owner) {
+			return nil
+		}
 		if err := restoreHPA(ctx, r.Client, ref.Namespace, workloadKindStatefulSet, ref.Name); err != nil {
 			return err
 		}
 		orig := parseOriginalReplicas(s.Annotations[annotationOriginalReplicas])
 		replicas := int32(orig)
+		base := s.DeepCopy()
 		s.Spec.Replicas = &replicas
-		delete(s.Annotations, annotationHibernated)
+		clearHibernated(s.Annotations)
 		delete(s.Annotations, annotationOriginalReplicas)
-		return r.Update(ctx, &s)
+		return r.Patch(ctx, &s, client.MergeFrom(base))
 
 	case workloadKindDaemonSet:
 		var ds appsv1.DaemonSet
@@ -553,16 +587,20 @@ func (r *ClusterHibernatePolicyReconciler) wakeWorkload(ctx context.Context, ref
 		if ds.Annotations[annotationHibernated] != annotationTrueValue {
 			return nil
 		}
+		if !ownedBy(ds.Annotations, owner) {
+			return nil
+		}
 		origNS, err := unmarshalNodeSelector(ds.Annotations[annotationOriginalNodeSelector])
 		if err != nil {
 			log := logf.FromContext(ctx)
 			log.Error(err, "parsing stored nodeSelector annotation, restoring with nil", "daemonset", ds.Name)
 			origNS = nil
 		}
+		base := ds.DeepCopy()
 		ds.Spec.Template.Spec.NodeSelector = origNS
-		delete(ds.Annotations, annotationHibernated)
+		clearHibernated(ds.Annotations)
 		delete(ds.Annotations, annotationOriginalNodeSelector)
-		return r.Update(ctx, &ds)
+		return r.Patch(ctx, &ds, client.MergeFrom(base))
 
 	case workloadKindReplicaSet:
 		var rs appsv1.ReplicaSet
@@ -572,15 +610,19 @@ func (r *ClusterHibernatePolicyReconciler) wakeWorkload(ctx context.Context, ref
 		if rs.Annotations[annotationHibernated] != annotationTrueValue {
 			return nil
 		}
+		if !ownedBy(rs.Annotations, owner) {
+			return nil
+		}
 		if err := restoreHPA(ctx, r.Client, ref.Namespace, workloadKindReplicaSet, ref.Name); err != nil {
 			return err
 		}
 		orig := parseOriginalReplicas(rs.Annotations[annotationOriginalReplicas])
 		replicas := int32(orig)
+		base := rs.DeepCopy()
 		rs.Spec.Replicas = &replicas
-		delete(rs.Annotations, annotationHibernated)
+		clearHibernated(rs.Annotations)
 		delete(rs.Annotations, annotationOriginalReplicas)
-		return r.Update(ctx, &rs)
+		return r.Patch(ctx, &rs, client.MergeFrom(base))
 	}
 	return nil
 }

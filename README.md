@@ -433,6 +433,10 @@ spec:
 | `action.sleepDaemonSet` | | Hibernates **DaemonSets only** via nodeSelector injection. Default: `false`. No effect on other workload types |
 | `action.maxReplicas` | | Caps **Deployments, StatefulSets and ReplicaSets** to N replicas. Set to `0` to scale them to zero. HPAs are suspended and restored on wake; for zero, the HPA is temporarily detached because HPA replica bounds must be positive. No effect on DaemonSets |
 
+Availability windows are validated by admission webhook. Timezones must be valid
+IANA names, and `from` must be before `until`. Overnight windows such as
+`22:00` to `06:00` are currently rejected.
+
 ---
 
 ### ClusterHibernatePolicy (`chp`)
@@ -492,6 +496,7 @@ kubectl annotate namespace staging greencosts.hstr.nl/clusterhibernatepolicy=bus
 |---|---|---|
 | `greencosts.hstr.nl/clusterhibernatepolicy` | `Namespace`, `Deployment`, `StatefulSet`, `DaemonSet`, standalone `ReplicaSet` | Opts resources into a `ClusterHibernatePolicy` by name |
 | `greencosts.hstr.nl/hibernated` | Workloads managed by the controller | Marks resources currently hibernated by kube-greencosts |
+| `greencosts.hstr.nl/hibernated-by-kind` / `greencosts.hstr.nl/hibernated-by-name` / `greencosts.hstr.nl/hibernated-by-namespace` | Workloads managed by the controller | Records which `HibernatePolicy` or `ClusterHibernatePolicy` owns the hibernation state so overlapping policies do not wake each other's workloads |
 | `greencosts.hstr.nl/original-replicas` | `Deployment`, `StatefulSet`, standalone `ReplicaSet` | Stores the original replica count before hibernation so wake-up restores it |
 | `greencosts.hstr.nl/original-nodeselector` | `DaemonSet` | Stores the original node selector before DaemonSet hibernation |
 | `greencosts.hstr.nl/original-hpa-min` / `greencosts.hstr.nl/original-hpa-max` | `HorizontalPodAutoscaler` | Stores HPA replica bounds while an affected workload is hibernated |
@@ -501,6 +506,10 @@ Namespace annotations apply to every supported workload in that namespace unless
 the workload has its own `greencosts.hstr.nl/clusterhibernatepolicy` annotation.
 When a workload annotation is present, it wins over the namespace annotation,
 including when it points to another policy.
+
+Hibernation ownership annotations are internal controller state. If both a
+namespace `HibernatePolicy` and a `ClusterHibernatePolicy` can see the same
+workload, only the policy that put the workload to sleep may wake it.
 
 For `maxReplicas: 0`, the temporary HPA target name is intentionally short and
 hash-based (`kube-greencosts-hibernated-<hash>`). The controller does not append
@@ -516,6 +525,15 @@ generated Job.
 ---
 
 ## Provider Configuration
+
+`EnergyPriceSource` validates that `spec.providers` contains exactly the
+configuration block matching `spec.provider`. For example, `provider: entsoe`
+requires `providers.entsoeConfig` and rejects `eneverConfig` or
+`customProviderConfig` on the same resource.
+
+Provider HTTP telemetry redacts secret query parameters before adding URL
+attributes to spans. This protects enever `token` and ENTSO-E `securityToken`
+values while still sending the original token to the upstream provider.
 
 ### enever.nl
 
@@ -647,13 +665,16 @@ default `make docker-build` tags the image as
 `docker.io/tristanscholten/kube-greencosts-controller:v<version>` and `latest`.
 Override `IMAGE_REPOSITORY`, `IMG` or `IMAGE_TAGS` when publishing elsewhere.
 
-The GitHub Actions workflow in
-[`.github/workflows/container.yml`](.github/workflows/container.yml) builds every
-pull request and pushes Docker Hub images on `main`, `v*.*.*` tags and manual
-dispatches. Pull request and `main` builds calculate the image tag with
-`gandarez/semver-action`, using `VERSION` as the base version; release tag builds
-validate that the Git tag matches `VERSION`. The workflow expects repository
-secrets named `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`.
+GitHub Actions run linting, unit/envtest suites and container builds on pull
+requests. The scheduled/manual e2e workflow creates a local Kind cluster and
+runs `go test ./test/e2e -count=1 -timeout=15m`.
+
+The container workflow in [`.github/workflows/container.yml`](.github/workflows/container.yml)
+builds every pull request and pushes Docker Hub images on `main`, `v*.*.*` tags
+and manual dispatches. Pull request and `main` builds calculate the image tag
+with `gandarez/semver-action`, using `VERSION` as the base version; release tag
+builds validate that the Git tag matches `VERSION`. The workflow expects
+repository secrets named `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`.
 
 ---
 

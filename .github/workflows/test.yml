@@ -1,0 +1,41 @@
+name: Go Tests
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "**/*.go"
+      - "config/crd/**"
+      - "go.mod"
+      - "go.sum"
+  push:
+    branches: [main]
+    paths:
+      - "**/*.go"
+      - "config/crd/**"
+      - "go.mod"
+      - "go.sum"
+  workflow_dispatch:
+
+jobs:
+  unit:
+    name: Unit and envtest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up envtest binaries
+        run: make setup-envtest
+
+      - name: Run unit and envtest suites
+        run: go test ./api/... ./cmd/... ./internal/... ./test/utils -count=1

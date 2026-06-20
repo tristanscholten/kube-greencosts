@@ -560,16 +560,99 @@ spec:
 			})
 		})
 
-		// +kubebuilder:scaffold:e2e-webhooks-checks
+		It("should not let HibernatePolicy wake or take over ClusterHibernatePolicy workloads", func() {
+			const testNamespace = "kube-greencosts-e2e-overlap"
+			createNamespace(testNamespace)
+			DeferCleanup(deleteNamespace, testNamespace)
+			DeferCleanup(func() {
+				kubectl("delete", "chp", "cluster-owner", "--ignore-not-found")
+			})
 
-		// TODO: Customize the e2e test suite with scenarios specific to your project.
-		// Consider applying sample/CR(s) and check their status and/or verifying
-		// the reconciliation by using the metrics, i.e.:
-		// metricsOutput := getMetricsOutput()
-		// Expect(metricsOutput).To(ContainSubstring(
-		//    fmt.Sprintf(`controller_runtime_reconcile_total{controller="%s",result="success"} 1`,
-		//    strings.ToLower(<Kind>),
-		// ))
+			applyYAML(testNamespace, `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: overlap-deploy
+  annotations:
+    greencosts.hstr.nl/clusterhibernatepolicy: cluster-owner
+spec:
+  replicas: 3
+  selector:
+    matchLabels: {app: overlap-deploy}
+  template:
+    metadata:
+      labels: {app: overlap-deploy}
+    spec:
+      containers:
+      - name: pause
+        image: registry.k8s.io/pause:3.10
+---
+apiVersion: greencosts.hstr.nl/v1alpha1
+kind: ClusterHibernatePolicy
+metadata:
+  name: cluster-owner
+spec:
+  action:
+    maxReplicas: 1
+`)
+
+			waitFor("cluster policy owns overlap deployment", func(g Gomega) {
+				replicas := kubectl("get", "deployment", "overlap-deploy", "-n", testNamespace,
+					"-o", `jsonpath={.spec.replicas}`)
+				ownerKind := kubectl("get", "deployment", "overlap-deploy", "-n", testNamespace,
+					"-o", `jsonpath={.metadata.annotations.greencosts\.hstr\.nl/hibernated-by-kind}`)
+				ownerName := kubectl("get", "deployment", "overlap-deploy", "-n", testNamespace,
+					"-o", `jsonpath={.metadata.annotations.greencosts\.hstr\.nl/hibernated-by-name}`)
+				g.Expect(replicas).To(Equal("1"))
+				g.Expect(ownerKind).To(Equal("ClusterHibernatePolicy"))
+				g.Expect(ownerName).To(Equal("cluster-owner"))
+			})
+
+			applyYAML(testNamespace, `
+apiVersion: greencosts.hstr.nl/v1alpha1
+kind: HibernatePolicy
+metadata:
+  name: namespace-owner
+spec:
+  workloadTypes: [Deployment]
+  action:
+    maxReplicas: 0
+`)
+
+			waitFor("namespace policy does not take over cluster-owned deployment", func(g Gomega) {
+				condition := kubectl("get", "hibernatepolicy", "namespace-owner", "-n", testNamespace,
+					"-o", `jsonpath={.status.conditions[?(@.type=="Ready")].status}`)
+				replicas := kubectl("get", "deployment", "overlap-deploy", "-n", testNamespace,
+					"-o", `jsonpath={.spec.replicas}`)
+				ownerKind := kubectl("get", "deployment", "overlap-deploy", "-n", testNamespace,
+					"-o", `jsonpath={.metadata.annotations.greencosts\.hstr\.nl/hibernated-by-kind}`)
+				g.Expect(condition).To(Equal("True"))
+				g.Expect(replicas).To(Equal("1"))
+				g.Expect(ownerKind).To(Equal("ClusterHibernatePolicy"))
+			})
+
+			kubectl("patch", "hibernatepolicy", "namespace-owner", "-n", testNamespace,
+				"--type=merge", "-p", currentAvailabilityWindowPatch())
+			waitFor("namespace policy does not wake cluster-owned deployment", func(g Gomega) {
+				replicas := kubectl("get", "deployment", "overlap-deploy", "-n", testNamespace,
+					"-o", `jsonpath={.spec.replicas}`)
+				ownerKind := kubectl("get", "deployment", "overlap-deploy", "-n", testNamespace,
+					"-o", `jsonpath={.metadata.annotations.greencosts\.hstr\.nl/hibernated-by-kind}`)
+				g.Expect(replicas).To(Equal("1"))
+				g.Expect(ownerKind).To(Equal("ClusterHibernatePolicy"))
+			})
+
+			kubectl("patch", "chp", "cluster-owner", "--type=merge", "-p", currentAvailabilityWindowPatch())
+			waitFor("cluster owner wakes its deployment", func(g Gomega) {
+				replicas := kubectl("get", "deployment", "overlap-deploy", "-n", testNamespace,
+					"-o", `jsonpath={.spec.replicas}`)
+				ownerKind := kubectl("get", "deployment", "overlap-deploy", "-n", testNamespace,
+					"-o", `jsonpath={.metadata.annotations.greencosts\.hstr\.nl/hibernated-by-kind}`)
+				g.Expect(replicas).To(Equal("3"))
+				g.Expect(ownerKind).To(BeEmpty())
+			})
+		})
+
 	})
 })
 

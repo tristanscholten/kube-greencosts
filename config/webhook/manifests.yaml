@@ -10,6 +10,26 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
+      path: /validate-greencosts-hstr-nl-v1alpha1-clusterhibernatepolicy
+  failurePolicy: Fail
+  name: vclusterhibernatepolicy.kb.io
+  rules:
+  - apiGroups:
+    - greencosts.hstr.nl
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - clusterhibernatepolicies
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
       path: /validate-greencosts-hstr-nl-v1alpha1-energyawarecronjob
   failurePolicy: Fail
   name: venergyawarecronjob.kb.io
@@ -23,4 +43,24 @@ webhooks:
     - UPDATE
     resources:
     - energyawarecronjobs
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-greencosts-hstr-nl-v1alpha1-hibernatepolicy
+  failurePolicy: Fail
+  name: vhibernatepolicy.kb.io
+  rules:
+  - apiGroups:
+    - greencosts.hstr.nl
+    apiVersions:
+    - v1alpha1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - hibernatepolicies
   sideEffects: None

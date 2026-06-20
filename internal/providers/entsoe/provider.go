@@ -34,7 +34,6 @@ import (
 	"net/http"
 	"time"
 
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -134,14 +133,9 @@ type Provider struct {
 // New constructs a Provider with the given EIC area code and security token.
 func New(areaCode, token string) *Provider {
 	return &Provider{
-		areaCode: areaCode,
-		token:    token,
-		// otelhttp.NewTransport wraps the default transport so every HTTP call
-		// produces a child span and propagates W3C trace context headers.
-		httpClient: &http.Client{
-			Transport: otelhttp.NewTransport(http.DefaultTransport),
-			Timeout:   requestTimeout,
-		},
+		areaCode:   areaCode,
+		token:      token,
+		httpClient: providers.NewRedactedHTTPClient(requestTimeout, "securityToken"),
 	}
 }
 
