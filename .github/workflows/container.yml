@@ -22,9 +22,11 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Read SemVer
-        id: version
+        id: release-version
         shell: bash
         run: |
           version="$(tr -d '[:space:]' < VERSION)"
@@ -39,6 +41,62 @@ jobs:
           fi
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare SemVer branch context
+        if: github.ref_type != 'tag'
+        id: semver-context
+        shell: bash
+        run: |
+          git checkout -B "${GITHUB_BASE_REF:-${GITHUB_REF_NAME}}"
+
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            semver_sha="$(
+              GIT_AUTHOR_NAME="github-actions[bot]" \
+              GIT_AUTHOR_EMAIL="41898282+github-actions[bot]@users.noreply.github.com" \
+              GIT_COMMITTER_NAME="github-actions[bot]" \
+              GIT_COMMITTER_EMAIL="41898282+github-actions[bot]@users.noreply.github.com" \
+              git commit-tree HEAD^{tree} \
+                -p HEAD \
+                -m "Merge pull request #${{ github.event.pull_request.number }} from ${{ github.repository_owner }}/${GITHUB_HEAD_REF}"
+            )"
+            git replace "${GITHUB_SHA}" "$semver_sha"
+          else
+            semver_sha="${GITHUB_SHA}"
+          fi
+
+          echo "sha=$semver_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Calculate SemVer image tag
+        if: github.ref_type != 'tag'
+        id: semver
+        uses: gandarez/semver-action@v2.2.0
+        with:
+          branching_model: trunk-based
+          base_version: ${{ steps.release-version.outputs.version }}
+          main_branch_name: main
+          minor_regex: "(?i)^(.+:)?(feat(ure)?/.+)"
+          patch_regex: "(?i)^(.+:)?((bugfix|fix|hotfix)/.+)"
+          major_regex: "(?i)^(.+:)?(release/.+)"
+
+      - name: Select image tag
+        id: image-version
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ steps.release-version.outputs.version }}
+          SEMVER_TAG: ${{ steps.semver.outputs.SEMVER_TAG || steps.semver.outputs.semver_tag }}
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            image_tag="v${RELEASE_VERSION}"
+          else
+            image_tag="${SEMVER_TAG//+/-}"
+          fi
+
+          if [[ ! "$image_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "Calculated image tag is not Docker-safe SemVer: $image_tag" >&2
+            exit 1
+          fi
+
+          echo "tag=$image_tag" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -56,7 +114,7 @@ jobs:
         with:
           images: ${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=v${{ steps.version.outputs.version }}
+            type=raw,value=${{ steps.image-version.outputs.tag }}
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
             type=ref,event=pr
 

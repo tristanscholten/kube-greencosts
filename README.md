@@ -627,16 +627,18 @@ make docker-build
 make deploy
 ```
 
-Image builds use [`VERSION`](VERSION) as the SemVer source of truth. By default
-`make docker-build` tags the image as
+Local image builds use [`VERSION`](VERSION) as the SemVer source of truth. By
+default `make docker-build` tags the image as
 `docker.io/tristanscholten/kube-greencosts-controller:v<version>` and `latest`.
 Override `IMAGE_REPOSITORY`, `IMG` or `IMAGE_TAGS` when publishing elsewhere.
 
 The GitHub Actions workflow in
 [`.github/workflows/container.yml`](.github/workflows/container.yml) builds every
 pull request and pushes Docker Hub images on `main`, `v*.*.*` tags and manual
-dispatches. It expects repository secrets named `DOCKERHUB_USERNAME` and
-`DOCKERHUB_TOKEN`.
+dispatches. Pull request and `main` builds calculate the image tag with
+`gandarez/semver-action`, using `VERSION` as the base version; release tag builds
+validate that the Git tag matches `VERSION`. The workflow expects repository
+secrets named `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`.
 
 ---
 
