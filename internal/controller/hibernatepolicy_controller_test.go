@@ -38,7 +38,7 @@ var _ = Describe("HibernatePolicy Controller", func() {
 
 		typeNamespacedName := types.NamespacedName{
 			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
+			Namespace: testDefaultNamespace, // TODO(user):Modify as needed
 		}
 		hibernatepolicy := &greencostsv1alpha1.HibernatePolicy{}
 
@@ -49,9 +49,14 @@ var _ = Describe("HibernatePolicy Controller", func() {
 				resource := &greencostsv1alpha1.HibernatePolicy{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
-						Namespace: "default",
+						Namespace: testDefaultNamespace,
 					},
-					// TODO(user): Specify other spec details if needed.
+					Spec: greencostsv1alpha1.HibernatePolicySpec{
+						WorkloadTypes: []greencostsv1alpha1.WorkloadType{
+							greencostsv1alpha1.WorkloadTypeDeployment,
+						},
+						Action: greencostsv1alpha1.HibernateAction{},
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}

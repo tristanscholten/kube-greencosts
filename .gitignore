@@ -7,8 +7,6 @@
 bin/*
 Dockerfile.cross
 
-Makefile
-
 # Test binary, built with `go test -c`
 *.test
 

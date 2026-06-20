@@ -216,7 +216,7 @@ env:
 
 - Kubernetes ≥ 1.26
 - `kubectl` configured for your cluster
-- `make` and `docker` (or `podman`) for building
+- `make` and `podman` (or Docker via `CONTAINER_TOOL=docker`) for building
 - An [ENTSO-E security token](https://transparency.entsoe.eu/usrm/user/createPublicUser) **or** an [enever.nl API token](https://enever.nl/api)
 
 ---
@@ -229,8 +229,11 @@ env:
 git clone https://github.com/tristanscholten/kube-greencosts.git
 cd kube-greencosts
 
-# Build image, install CRDs, and deploy the operator
-make all
+# Build the controller image
+make docker-build
+
+# Install CRDs and deploy the operator to your current kubectl context
+make deploy
 ```
 
 ### 2 — Create an API token secret
@@ -480,6 +483,26 @@ kubectl annotate namespace staging greencosts.hstr.nl/clusterhibernatepolicy=bus
 | `includedResources` | | Restrict the policy to only these workload kinds. Mutually exclusive with `excludedResources` |
 | `excludedResources` | | Prevent the policy from affecting these workload kinds. Mutually exclusive with `includedResources` |
 
+**Annotation behaviour**
+
+| Annotation | Supported resources | Purpose |
+|---|---|---|
+| `greencosts.hstr.nl/clusterhibernatepolicy` | `Namespace`, `Deployment`, `StatefulSet`, `DaemonSet`, standalone `ReplicaSet` | Opts resources into a `ClusterHibernatePolicy` by name |
+| `greencosts.hstr.nl/hibernated` | Workloads managed by the controller | Marks resources currently hibernated by kube-greencosts |
+| `greencosts.hstr.nl/original-replicas` | `Deployment`, `StatefulSet`, standalone `ReplicaSet` | Stores the original replica count before hibernation so wake-up restores it |
+| `greencosts.hstr.nl/original-nodeselector` | `DaemonSet` | Stores the original node selector before DaemonSet hibernation |
+| `greencosts.hstr.nl/original-hpa-min` / `greencosts.hstr.nl/original-hpa-max` | `HorizontalPodAutoscaler` | Stores HPA replica bounds while an affected workload is hibernated |
+
+Namespace annotations apply to every supported workload in that namespace unless
+the workload has its own `greencosts.hstr.nl/clusterhibernatepolicy` annotation.
+When a workload annotation is present, it wins over the namespace annotation,
+including when it points to another policy.
+
+`EnergyAwareCronJob` also preserves annotations from
+`spec.cronJob.jobTemplate.metadata.annotations` on the Jobs it creates, so
+runbooks, observability metadata and policy annotations can travel with the
+generated Job.
+
 ---
 
 ## Provider Configuration
@@ -581,20 +604,41 @@ Scrape configuration is in [`config/prometheus/`](config/prometheus/).
 ## Development
 
 ```bash
-# Run locally against your current kubeconfig cluster
-make run
+# Run the controller locally against your current kubeconfig cluster
+go run ./cmd/main.go
 
-# Regenerate CRD manifests and deepcopy functions after type changes
+# CRD manifests and generated Go files are committed under config/ and api/.
+# Run these after type changes when generator tooling is installed.
 make generate && make manifests
 
+# Show or bump the SemVer used for image tags
+make version
+make bump-patch   # or bump-minor / bump-major
+
 # Run unit tests
+make setup-envtest
 make test
 
-# Build and deploy to cluster
-make all
-kubectl rollout restart deployment/kube-greencosts-controller-manager \
-  -n kube-greencosts-system
+# Run e2e tests against a disposable Kind cluster
+make test-e2e
+
+# Build and deploy to your current kubectl context
+make docker-build
+make deploy
 ```
+
+Local image builds use [`VERSION`](VERSION) as the SemVer source of truth. By
+default `make docker-build` tags the image as
+`docker.io/tristanscholten/kube-greencosts-controller:v<version>` and `latest`.
+Override `IMAGE_REPOSITORY`, `IMG` or `IMAGE_TAGS` when publishing elsewhere.
+
+The GitHub Actions workflow in
+[`.github/workflows/container.yml`](.github/workflows/container.yml) builds every
+pull request and pushes Docker Hub images on `main`, `v*.*.*` tags and manual
+dispatches. Pull request and `main` builds calculate the image tag with
+`gandarez/semver-action`, using `VERSION` as the base version; release tag builds
+validate that the Git tag matches `VERSION`. The workflow expects repository
+secrets named `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`.
 
 ---
 
