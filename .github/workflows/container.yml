@@ -18,6 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      pull-requests: read
 
     steps:
       - name: Check out repository
@@ -43,31 +44,52 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Prepare SemVer branch context
-        if: github.ref_type != 'tag'
+        if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
         id: semver-context
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           git checkout -B "${GITHUB_BASE_REF:-${GITHUB_REF_NAME}}"
 
+          pr_number=""
+          source_ref=""
           if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
-            semver_sha="$(
-              GIT_AUTHOR_NAME="github-actions[bot]" \
-              GIT_AUTHOR_EMAIL="41898282+github-actions[bot]@users.noreply.github.com" \
-              GIT_COMMITTER_NAME="github-actions[bot]" \
-              GIT_COMMITTER_EMAIL="41898282+github-actions[bot]@users.noreply.github.com" \
-              git commit-tree HEAD^{tree} \
-                -p HEAD \
-                -m "Merge pull request #${{ github.event.pull_request.number }} from ${{ github.repository_owner }}/${GITHUB_HEAD_REF}"
+            pr_number="${{ github.event.pull_request.number }}"
+            source_ref="${GITHUB_HEAD_REF}"
+          elif [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            pr_number="$(
+              gh api \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+                --jq '.[0].number // empty' || true
             )"
-            git replace "${GITHUB_SHA}" "$semver_sha"
-          else
-            semver_sha="${GITHUB_SHA}"
+            source_ref="$(
+              gh api \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "/repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+                --jq '.[0].head.ref // empty' || true
+            )"
           fi
 
-          echo "sha=$semver_sha" >> "$GITHUB_OUTPUT"
+          source_ref="${source_ref:-fix/${GITHUB_REF_NAME}}"
+          pr_number="${pr_number:-0}"
+
+          semver_sha="$(
+            GIT_AUTHOR_NAME="github-actions[bot]" \
+            GIT_AUTHOR_EMAIL="41898282+github-actions[bot]@users.noreply.github.com" \
+            GIT_COMMITTER_NAME="github-actions[bot]" \
+            GIT_COMMITTER_EMAIL="41898282+github-actions[bot]@users.noreply.github.com" \
+            git commit-tree HEAD^{tree} \
+              -p HEAD \
+              -m "Merge pull request #${pr_number} from ${GITHUB_REPOSITORY_OWNER}/${source_ref}"
+          )"
+          git replace "${GITHUB_SHA}" "$semver_sha"
 
       - name: Calculate SemVer image tag
-        if: github.ref_type != 'tag'
+        if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
         id: semver
         uses: gandarez/semver-action@v2.2.0
         with:
@@ -85,7 +107,7 @@ jobs:
           RELEASE_VERSION: ${{ steps.release-version.outputs.version }}
           SEMVER_TAG: ${{ steps.semver.outputs.SEMVER_TAG || steps.semver.outputs.semver_tag }}
         run: |
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+          if [[ -z "${SEMVER_TAG}" ]]; then
             image_tag="v${RELEASE_VERSION}"
           else
             image_tag="${SEMVER_TAG//+/-}"
