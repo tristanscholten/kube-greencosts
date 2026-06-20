@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -409,7 +410,7 @@ func (r *ClusterHibernatePolicyReconciler) hibernateWorkload(
 		if d.Annotations == nil {
 			d.Annotations = map[string]string{}
 		}
-		d.Annotations[annotationOriginalReplicas] = fmt.Sprintf("%d", current)
+		d.Annotations[annotationOriginalReplicas] = strconv.Itoa(int(current))
 		markHibernated(d.Annotations, owner)
 		d.Spec.Replicas = &target
 		if err := r.Patch(ctx, &d, client.MergeFrom(base)); err != nil {
@@ -446,7 +447,7 @@ func (r *ClusterHibernatePolicyReconciler) hibernateWorkload(
 		if s.Annotations == nil {
 			s.Annotations = map[string]string{}
 		}
-		s.Annotations[annotationOriginalReplicas] = fmt.Sprintf("%d", current)
+		s.Annotations[annotationOriginalReplicas] = strconv.Itoa(int(current))
 		markHibernated(s.Annotations, owner)
 		s.Spec.Replicas = &target
 		if err := r.Patch(ctx, &s, client.MergeFrom(base)); err != nil {
@@ -514,7 +515,7 @@ func (r *ClusterHibernatePolicyReconciler) hibernateWorkload(
 		if rs.Annotations == nil {
 			rs.Annotations = map[string]string{}
 		}
-		rs.Annotations[annotationOriginalReplicas] = fmt.Sprintf("%d", current)
+		rs.Annotations[annotationOriginalReplicas] = strconv.Itoa(int(current))
 		markHibernated(rs.Annotations, owner)
 		rs.Spec.Replicas = &target
 		if err := r.Patch(ctx, &rs, client.MergeFrom(base)); err != nil {
