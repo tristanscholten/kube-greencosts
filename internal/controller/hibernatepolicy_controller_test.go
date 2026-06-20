@@ -38,7 +38,7 @@ var _ = Describe("HibernatePolicy Controller", func() {
 
 		typeNamespacedName := types.NamespacedName{
 			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
+			Namespace: testDefaultNamespace, // TODO(user):Modify as needed
 		}
 		hibernatepolicy := &greencostsv1alpha1.HibernatePolicy{}
 
@@ -49,7 +49,7 @@ var _ = Describe("HibernatePolicy Controller", func() {
 				resource := &greencostsv1alpha1.HibernatePolicy{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
-						Namespace: "default",
+						Namespace: testDefaultNamespace,
 					},
 					Spec: greencostsv1alpha1.HibernatePolicySpec{
 						WorkloadTypes: []greencostsv1alpha1.WorkloadType{

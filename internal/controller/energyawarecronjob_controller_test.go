@@ -40,7 +40,7 @@ var _ = Describe("EnergyAwareCronJob Controller", func() {
 
 		typeNamespacedName := types.NamespacedName{
 			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
+			Namespace: testDefaultNamespace, // TODO(user):Modify as needed
 		}
 		energyawarecronjob := &greencostsv1alpha1.EnergyAwareCronJob{}
 
@@ -51,7 +51,7 @@ var _ = Describe("EnergyAwareCronJob Controller", func() {
 				resource := &greencostsv1alpha1.EnergyAwareCronJob{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
-						Namespace: "default",
+						Namespace: testDefaultNamespace,
 					},
 					Spec: greencostsv1alpha1.EnergyAwareCronJobSpec{
 						EnergyPriceSource: corev1.LocalObjectReference{Name: "prices"},

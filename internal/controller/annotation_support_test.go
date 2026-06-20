@@ -17,6 +17,15 @@ import (
 	greencostsv1alpha1 "github.com/tristanscholten/kube-greencosts/api/v1alpha1"
 )
 
+const (
+	testBusinessHoursPolicy = "business-hours"
+	testDefaultNamespace    = "default"
+	testProdNamespace       = "prod"
+	testRunbookURL          = "https://example.com/runbook"
+	testStagingNamespace    = "staging"
+	testTrainerApp          = "trainer"
+)
+
 func TestBuildJobCopiesTemplateLabelsAndAnnotations(t *testing.T) {
 	eacj := &greencostsv1alpha1.EnergyAwareCronJob{
 		ObjectMeta: metav1.ObjectMeta{
@@ -28,10 +37,10 @@ func TestBuildJobCopiesTemplateLabelsAndAnnotations(t *testing.T) {
 				JobTemplate: batchv1.JobTemplateSpec{
 					ObjectMeta: metav1.ObjectMeta{
 						Labels: map[string]string{
-							"app.kubernetes.io/name": "trainer",
+							"app.kubernetes.io/name": testTrainerApp,
 						},
 						Annotations: map[string]string{
-							"example.com/runbook": "https://example.com/runbook",
+							"example.com/runbook": testRunbookURL,
 						},
 					},
 				},
@@ -44,20 +53,20 @@ func TestBuildJobCopiesTemplateLabelsAndAnnotations(t *testing.T) {
 	if got := job.Labels[ownerLabel]; got != "nightly" {
 		t.Fatalf("owner label = %q, want nightly", got)
 	}
-	if got := job.Labels["app.kubernetes.io/name"]; got != "trainer" {
+	if got := job.Labels["app.kubernetes.io/name"]; got != testTrainerApp {
 		t.Fatalf("template label = %q, want trainer", got)
 	}
-	if got := job.Annotations["example.com/runbook"]; got != "https://example.com/runbook" {
+	if got := job.Annotations["example.com/runbook"]; got != testRunbookURL {
 		t.Fatalf("template annotation = %q, want runbook URL", got)
 	}
 
 	job.Labels["app.kubernetes.io/name"] = "mutated"
 	job.Annotations["example.com/runbook"] = "mutated"
 
-	if got := eacj.Spec.CronJob.JobTemplate.Labels["app.kubernetes.io/name"]; got != "trainer" {
+	if got := eacj.Spec.CronJob.JobTemplate.Labels["app.kubernetes.io/name"]; got != testTrainerApp {
 		t.Fatalf("mutating job labels changed template label to %q", got)
 	}
-	if got := eacj.Spec.CronJob.JobTemplate.Annotations["example.com/runbook"]; got != "https://example.com/runbook" {
+	if got := eacj.Spec.CronJob.JobTemplate.Annotations["example.com/runbook"]; got != testRunbookURL {
 		t.Fatalf("mutating job annotations changed template annotation to %q", got)
 	}
 }
@@ -77,25 +86,25 @@ func TestClusterHibernatePolicyCollectsAnnotatedResources(t *testing.T) {
 		WithObjects(
 			&corev1.Namespace{
 				ObjectMeta: metav1.ObjectMeta{
-					Name: "staging",
+					Name: testStagingNamespace,
 					Annotations: map[string]string{
-						AnnotationClusterHibernatePolicy: "business-hours",
+						AnnotationClusterHibernatePolicy: testBusinessHoursPolicy,
 					},
 				},
 			},
 			&corev1.Namespace{
-				ObjectMeta: metav1.ObjectMeta{Name: "prod"},
+				ObjectMeta: metav1.ObjectMeta{Name: testProdNamespace},
 			},
 			&appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "inherited",
-					Namespace: "staging",
+					Namespace: testStagingNamespace,
 				},
 			},
 			&appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "overridden",
-					Namespace: "staging",
+					Namespace: testStagingNamespace,
 					Annotations: map[string]string{
 						AnnotationClusterHibernatePolicy: "other-policy",
 					},
@@ -104,32 +113,32 @@ func TestClusterHibernatePolicyCollectsAnnotatedResources(t *testing.T) {
 			&appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "direct",
-					Namespace: "prod",
+					Namespace: testProdNamespace,
 					Annotations: map[string]string{
-						AnnotationClusterHibernatePolicy: "business-hours",
+						AnnotationClusterHibernatePolicy: testBusinessHoursPolicy,
 					},
 				},
 			},
 			&appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "database",
-					Namespace: "prod",
+					Namespace: testProdNamespace,
 					Annotations: map[string]string{
-						AnnotationClusterHibernatePolicy: "business-hours",
+						AnnotationClusterHibernatePolicy: testBusinessHoursPolicy,
 					},
 				},
 			},
 			&appsv1.ReplicaSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "owned-by-deployment",
-					Namespace: "prod",
+					Namespace: testProdNamespace,
 					Annotations: map[string]string{
-						AnnotationClusterHibernatePolicy: "business-hours",
+						AnnotationClusterHibernatePolicy: testBusinessHoursPolicy,
 					},
 					OwnerReferences: []metav1.OwnerReference{
 						{
 							APIVersion: "apps/v1",
-							Kind:       "Deployment",
+							Kind:       workloadKindDeployment,
 							Name:       "owner",
 						},
 					},
@@ -141,7 +150,7 @@ func TestClusterHibernatePolicyCollectsAnnotatedResources(t *testing.T) {
 	reconciler := &ClusterHibernatePolicyReconciler{Client: c, Scheme: s}
 	refs, err := reconciler.collectWorkloads(
 		ctx,
-		"business-hours",
+		testBusinessHoursPolicy,
 		greencostsv1alpha1.ClusterHibernatePolicySpec{},
 	)
 	if err != nil {

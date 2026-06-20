@@ -38,7 +38,7 @@ var _ = Describe("EnergyPriceSource Controller", func() {
 
 		typeNamespacedName := types.NamespacedName{
 			Name:      resourceName,
-			Namespace: "default", // TODO(user):Modify as needed
+			Namespace: testDefaultNamespace, // TODO(user):Modify as needed
 		}
 		energypricesource := &greencostsv1alpha1.EnergyPriceSource{}
 
@@ -49,7 +49,7 @@ var _ = Describe("EnergyPriceSource Controller", func() {
 				resource := &greencostsv1alpha1.EnergyPriceSource{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
-						Namespace: "default",
+						Namespace: testDefaultNamespace,
 					},
 					Spec: greencostsv1alpha1.EnergyPriceSourceSpec{
 						Provider:        "customProvider",

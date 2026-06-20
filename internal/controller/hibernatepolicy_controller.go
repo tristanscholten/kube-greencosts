@@ -43,11 +43,19 @@ const (
 	annotationOriginalReplicas     = "greencosts.hstr.nl/original-replicas"
 	annotationOriginalNodeSelector = "greencosts.hstr.nl/original-nodeselector"
 	annotationHibernated           = "greencosts.hstr.nl/hibernated"
+	annotationTrueValue            = "true"
+
+	workloadKindDeployment  = "Deployment"
+	workloadKindStatefulSet = "StatefulSet"
+	workloadKindDaemonSet   = "DaemonSet"
+	workloadKindReplicaSet  = "ReplicaSet"
+
+	defaultOriginalReplicas = 1
 
 	// hibernateNodeSelectorKey is injected into DaemonSet podTemplates to
 	// prevent scheduling. No real node should carry this label.
 	hibernateNodeSelectorKey   = "greencosts.hstr.nl/hibernate"
-	hibernateNodeSelectorValue = "true"
+	hibernateNodeSelectorValue = annotationTrueValue
 
 	windowCheckInterval = 5 * time.Minute
 )
@@ -215,8 +223,8 @@ func (r *HibernatePolicyReconciler) hibernateDeployments(
 	hibernated := []string{}
 	for i := range list.Items {
 		d := &list.Items[i]
-		if d.Annotations[annotationHibernated] == "true" {
-			hibernated = append(hibernated, "Deployment/"+d.Name)
+		if d.Annotations[annotationHibernated] == annotationTrueValue {
+			hibernated = append(hibernated, workloadKindDeployment+"/"+d.Name)
 			continue
 		}
 		current := int32(1)
@@ -231,15 +239,15 @@ func (r *HibernatePolicyReconciler) hibernateDeployments(
 			d.Annotations = map[string]string{}
 		}
 		d.Annotations[annotationOriginalReplicas] = strconv.Itoa(int(current))
-		d.Annotations[annotationHibernated] = "true"
+		d.Annotations[annotationHibernated] = annotationTrueValue
 		d.Spec.Replicas = &target
 		if err := r.Update(ctx, d); err != nil {
 			return hibernated, fmt.Errorf("scaling Deployment %s/%s: %w", namespace, d.Name, err)
 		}
-		if err := suspendHPA(ctx, r.Client, namespace, "Deployment", d.Name, target); err != nil {
+		if err := suspendHPA(ctx, r.Client, namespace, workloadKindDeployment, d.Name, target); err != nil {
 			return hibernated, err
 		}
-		hibernated = append(hibernated, "Deployment/"+d.Name)
+		hibernated = append(hibernated, workloadKindDeployment+"/"+d.Name)
 	}
 	return hibernated, nil
 }
@@ -251,13 +259,13 @@ func (r *HibernatePolicyReconciler) wakeDeployments(ctx context.Context, namespa
 	}
 	for i := range list.Items {
 		d := &list.Items[i]
-		if d.Annotations[annotationHibernated] != "true" {
+		if d.Annotations[annotationHibernated] != annotationTrueValue {
 			continue
 		}
-		if err := restoreHPA(ctx, r.Client, namespace, "Deployment", d.Name); err != nil {
+		if err := restoreHPA(ctx, r.Client, namespace, workloadKindDeployment, d.Name); err != nil {
 			return err
 		}
-		orig := parseOriginalReplicas(d.Annotations[annotationOriginalReplicas], 1)
+		orig := parseOriginalReplicas(d.Annotations[annotationOriginalReplicas])
 		replicas := int32(orig)
 		d.Spec.Replicas = &replicas
 		delete(d.Annotations, annotationHibernated)
@@ -283,8 +291,8 @@ func (r *HibernatePolicyReconciler) hibernateStatefulSets(
 	hibernated := []string{}
 	for i := range list.Items {
 		s := &list.Items[i]
-		if s.Annotations[annotationHibernated] == "true" {
-			hibernated = append(hibernated, "StatefulSet/"+s.Name)
+		if s.Annotations[annotationHibernated] == annotationTrueValue {
+			hibernated = append(hibernated, workloadKindStatefulSet+"/"+s.Name)
 			continue
 		}
 		current := int32(1)
@@ -299,15 +307,15 @@ func (r *HibernatePolicyReconciler) hibernateStatefulSets(
 			s.Annotations = map[string]string{}
 		}
 		s.Annotations[annotationOriginalReplicas] = strconv.Itoa(int(current))
-		s.Annotations[annotationHibernated] = "true"
+		s.Annotations[annotationHibernated] = annotationTrueValue
 		s.Spec.Replicas = &target
 		if err := r.Update(ctx, s); err != nil {
 			return hibernated, fmt.Errorf("scaling StatefulSet %s/%s: %w", namespace, s.Name, err)
 		}
-		if err := suspendHPA(ctx, r.Client, namespace, "StatefulSet", s.Name, target); err != nil {
+		if err := suspendHPA(ctx, r.Client, namespace, workloadKindStatefulSet, s.Name, target); err != nil {
 			return hibernated, err
 		}
-		hibernated = append(hibernated, "StatefulSet/"+s.Name)
+		hibernated = append(hibernated, workloadKindStatefulSet+"/"+s.Name)
 	}
 	return hibernated, nil
 }
@@ -319,13 +327,13 @@ func (r *HibernatePolicyReconciler) wakeStatefulSets(ctx context.Context, namesp
 	}
 	for i := range list.Items {
 		s := &list.Items[i]
-		if s.Annotations[annotationHibernated] != "true" {
+		if s.Annotations[annotationHibernated] != annotationTrueValue {
 			continue
 		}
-		if err := restoreHPA(ctx, r.Client, namespace, "StatefulSet", s.Name); err != nil {
+		if err := restoreHPA(ctx, r.Client, namespace, workloadKindStatefulSet, s.Name); err != nil {
 			return err
 		}
-		orig := parseOriginalReplicas(s.Annotations[annotationOriginalReplicas], 1)
+		orig := parseOriginalReplicas(s.Annotations[annotationOriginalReplicas])
 		replicas := int32(orig)
 		s.Spec.Replicas = &replicas
 		delete(s.Annotations, annotationHibernated)
@@ -355,8 +363,8 @@ func (r *HibernatePolicyReconciler) hibernateReplicaSets(
 		if isOwnedByDeployment(rs) {
 			continue
 		}
-		if rs.Annotations[annotationHibernated] == "true" {
-			hibernated = append(hibernated, "ReplicaSet/"+rs.Name)
+		if rs.Annotations[annotationHibernated] == annotationTrueValue {
+			hibernated = append(hibernated, workloadKindReplicaSet+"/"+rs.Name)
 			continue
 		}
 		current := int32(1)
@@ -371,15 +379,15 @@ func (r *HibernatePolicyReconciler) hibernateReplicaSets(
 			rs.Annotations = map[string]string{}
 		}
 		rs.Annotations[annotationOriginalReplicas] = strconv.Itoa(int(current))
-		rs.Annotations[annotationHibernated] = "true"
+		rs.Annotations[annotationHibernated] = annotationTrueValue
 		rs.Spec.Replicas = &target
 		if err := r.Update(ctx, rs); err != nil {
 			return hibernated, fmt.Errorf("scaling ReplicaSet %s/%s: %w", namespace, rs.Name, err)
 		}
-		if err := suspendHPA(ctx, r.Client, namespace, "ReplicaSet", rs.Name, target); err != nil {
+		if err := suspendHPA(ctx, r.Client, namespace, workloadKindReplicaSet, rs.Name, target); err != nil {
 			return hibernated, err
 		}
-		hibernated = append(hibernated, "ReplicaSet/"+rs.Name)
+		hibernated = append(hibernated, workloadKindReplicaSet+"/"+rs.Name)
 	}
 	return hibernated, nil
 }
@@ -394,13 +402,13 @@ func (r *HibernatePolicyReconciler) wakeReplicaSets(ctx context.Context, namespa
 		if isOwnedByDeployment(rs) {
 			continue
 		}
-		if rs.Annotations[annotationHibernated] != "true" {
+		if rs.Annotations[annotationHibernated] != annotationTrueValue {
 			continue
 		}
-		if err := restoreHPA(ctx, r.Client, namespace, "ReplicaSet", rs.Name); err != nil {
+		if err := restoreHPA(ctx, r.Client, namespace, workloadKindReplicaSet, rs.Name); err != nil {
 			return err
 		}
-		orig := parseOriginalReplicas(rs.Annotations[annotationOriginalReplicas], 1)
+		orig := parseOriginalReplicas(rs.Annotations[annotationOriginalReplicas])
 		replicas := int32(orig)
 		rs.Spec.Replicas = &replicas
 		delete(rs.Annotations, annotationHibernated)
@@ -425,8 +433,8 @@ func (r *HibernatePolicyReconciler) hibernateDaemonSets(ctx context.Context, nam
 	hibernated := []string{}
 	for i := range list.Items {
 		ds := &list.Items[i]
-		if ds.Annotations[annotationHibernated] == "true" {
-			hibernated = append(hibernated, "DaemonSet/"+ds.Name)
+		if ds.Annotations[annotationHibernated] == annotationTrueValue {
+			hibernated = append(hibernated, workloadKindDaemonSet+"/"+ds.Name)
 			continue
 		}
 		origNS := ds.Spec.Template.Spec.NodeSelector
@@ -438,14 +446,14 @@ func (r *HibernatePolicyReconciler) hibernateDaemonSets(ctx context.Context, nam
 			ds.Annotations = map[string]string{}
 		}
 		ds.Annotations[annotationOriginalNodeSelector] = string(origJSON)
-		ds.Annotations[annotationHibernated] = "true"
+		ds.Annotations[annotationHibernated] = annotationTrueValue
 		ds.Spec.Template.Spec.NodeSelector = map[string]string{
 			hibernateNodeSelectorKey: hibernateNodeSelectorValue,
 		}
 		if err := r.Update(ctx, ds); err != nil {
 			return hibernated, fmt.Errorf("hibernating DaemonSet %s/%s: %w", namespace, ds.Name, err)
 		}
-		hibernated = append(hibernated, "DaemonSet/"+ds.Name)
+		hibernated = append(hibernated, workloadKindDaemonSet+"/"+ds.Name)
 	}
 	return hibernated, nil
 }
@@ -458,7 +466,7 @@ func (r *HibernatePolicyReconciler) wakeDaemonSets(ctx context.Context, namespac
 	}
 	for i := range list.Items {
 		ds := &list.Items[i]
-		if ds.Annotations[annotationHibernated] != "true" {
+		if ds.Annotations[annotationHibernated] != annotationTrueValue {
 			continue
 		}
 		origJSON := ds.Annotations[annotationOriginalNodeSelector]
@@ -569,13 +577,13 @@ func weekdayFromSpec(w greencostsv1alpha1.Weekday) time.Weekday {
 
 // ── Shared utilities ──────────────────────────────────────────────────────────
 
-func parseOriginalReplicas(s string, fallback int) int {
+func parseOriginalReplicas(s string) int {
 	if s == "" {
-		return fallback
+		return defaultOriginalReplicas
 	}
 	v, err := strconv.Atoi(s)
 	if err != nil || v < 0 {
-		return fallback
+		return defaultOriginalReplicas
 	}
 	return v
 }
@@ -583,7 +591,7 @@ func parseOriginalReplicas(s string, fallback int) int {
 // isOwnedByDeployment returns true if the ReplicaSet has a Deployment owner reference.
 func isOwnedByDeployment(rs *appsv1.ReplicaSet) bool {
 	for _, ref := range rs.OwnerReferences {
-		if ref.Kind == "Deployment" {
+		if ref.Kind == workloadKindDeployment {
 			return true
 		}
 	}

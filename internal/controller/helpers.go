@@ -146,8 +146,8 @@ func restoreHPA(ctx context.Context, c client.Client, namespace, kind, name stri
 		return nil // not suspended by us
 	}
 
-	origMin := int32(parseOriginalReplicas(hpa.Annotations[annotationOriginalHPAMin], 1))
-	origMax := int32(parseOriginalReplicas(hpa.Annotations[annotationOriginalHPAMax], 1))
+	origMin := int32(parseOriginalReplicas(hpa.Annotations[annotationOriginalHPAMin]))
+	origMax := int32(parseOriginalReplicas(hpa.Annotations[annotationOriginalHPAMax]))
 
 	hpa.Spec.MinReplicas = &origMin
 	hpa.Spec.MaxReplicas = origMax
