@@ -16,10 +16,9 @@ limitations under the License.
 
 // Package telemetry initialises the global OpenTelemetry TracerProvider.
 //
-// Tracing is always enabled. The OTLP gRPC exporter targets
-// OTEL_EXPORTER_OTLP_ENDPOINT (default: localhost:4317 per the OTel spec).
-// If no collector is reachable the exporter retries silently in the background
-// — the operator continues running normally and drops spans.
+// Tracing is opt-in. Set OTEL_EXPORTER_OTLP_ENDPOINT to start the OTLP gRPC
+// exporter. When unset, the operator keeps the default no-op tracer provider
+// and emits no trace exporter connection logs.
 //
 // Usage in main():
 //
@@ -32,8 +31,8 @@ limitations under the License.
 //	}()
 //
 // All standard OTEL_* env vars (endpoint, headers, TLS, sampler, resource
-// attributes) are respected automatically. See the README Observability section
-// for the full reference.
+// attributes) are respected when tracing is enabled. See the README
+// Observability section for the full reference.
 //
 // To disable tracing entirely:
 //
@@ -54,16 +53,20 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
-// Setup initialises the global OpenTelemetry TracerProvider and returns a
-// shutdown function that flushes and closes the exporter.
+// Setup initialises the global OpenTelemetry TracerProvider when tracing is
+// enabled and returns a shutdown function that flushes and closes the exporter.
 //
-// The OTLP gRPC exporter is always started. When no collector is reachable
-// it retries in the background and drops spans without affecting the operator.
-// Set OTEL_TRACES_SAMPLER=always_off to disable span recording entirely.
+// Tracing is disabled unless OTEL_EXPORTER_OTLP_ENDPOINT is set. Set
+// OTEL_TRACES_SAMPLER=always_off to keep exporter setup but disable span
+// recording entirely.
 func Setup(ctx context.Context) (shutdown func(context.Context) error, err error) {
+	setPropagator()
+	if os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") == "" {
+		return noopShutdown, nil
+	}
+
 	// Create OTLP gRPC exporter. All connection options (endpoint, headers,
 	// TLS, timeout) are read automatically from OTEL_EXPORTER_OTLP_* env vars.
-	// Default endpoint: localhost:4317.
 	exp, err := otlptracegrpc.New(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("creating OTLP gRPC trace exporter: %w", err)
@@ -86,16 +89,20 @@ func Setup(ctx context.Context) (shutdown func(context.Context) error, err error
 
 	otel.SetTracerProvider(tp)
 
-	// Use the W3C Trace Context and Baggage propagators so that trace context
-	// is correctly propagated to/from HTTP headers when using otelhttp.
+	return tp.Shutdown, nil
+}
+
+func noopShutdown(context.Context) error {
+	return nil
+}
+
+func setPropagator() {
 	otel.SetTextMapPropagator(
 		propagation.NewCompositeTextMapPropagator(
 			propagation.TraceContext{},
 			propagation.Baggage{},
 		),
 	)
-
-	return tp.Shutdown, nil
 }
 
 // samplerFromEnv reads OTEL_TRACES_SAMPLER and OTEL_TRACES_SAMPLER_ARG and

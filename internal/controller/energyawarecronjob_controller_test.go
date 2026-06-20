@@ -66,7 +66,7 @@ var _ = Describe("EnergyAwareCronJob Controller", func() {
 										Spec: corev1.PodSpec{
 											Containers: []corev1.Container{
 												{
-													Name:  "worker",
+													Name:  testWorkerName,
 													Image: "busybox",
 												},
 											},

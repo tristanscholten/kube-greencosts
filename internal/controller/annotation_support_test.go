@@ -3,15 +3,19 @@ package controller
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv2 "k8s.io/api/autoscaling/v2"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	greencostsv1alpha1 "github.com/tristanscholten/kube-greencosts/api/v1alpha1"
@@ -24,6 +28,7 @@ const (
 	testRunbookURL          = "https://example.com/runbook"
 	testStagingNamespace    = "staging"
 	testTrainerApp          = "trainer"
+	testWorkerName          = "worker"
 )
 
 func TestBuildJobCopiesTemplateLabelsAndAnnotations(t *testing.T) {
@@ -68,6 +73,154 @@ func TestBuildJobCopiesTemplateLabelsAndAnnotations(t *testing.T) {
 	}
 	if got := eacj.Spec.CronJob.JobTemplate.Annotations["example.com/runbook"]; got != testRunbookURL {
 		t.Fatalf("mutating job annotations changed template annotation to %q", got)
+	}
+}
+
+func TestBuildJobShortensLongNamesAndOwnerLabels(t *testing.T) {
+	longName := strings.Repeat("very-long-energy-aware-cronjob-", 9) + "worker"
+	eacj := &greencostsv1alpha1.EnergyAwareCronJob{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      longName,
+			Namespace: "jobs",
+		},
+	}
+
+	job := buildJob(eacj, time.Unix(1_781_971_200, 0))
+
+	if errs := validation.IsDNS1123Label(job.Name); len(errs) > 0 {
+		t.Fatalf("job name %q is not a valid DNS-1123 label: %v", job.Name, errs)
+	}
+	if !strings.HasSuffix(job.Name, "-1781971200") {
+		t.Fatalf("job name %q does not preserve schedule suffix", job.Name)
+	}
+
+	owner := job.Labels[ownerLabel]
+	if errs := validation.IsValidLabelValue(owner); len(errs) > 0 {
+		t.Fatalf("owner label value %q is invalid: %v", owner, errs)
+	}
+	if len(owner) > maxKubernetesLabelLength {
+		t.Fatalf("owner label value length = %d, want <= %d", len(owner), maxKubernetesLabelLength)
+	}
+}
+
+func TestSelectPricePoint(t *testing.T) {
+	base := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
+	prices := []greencostsv1alpha1.PricePoint{
+		{At: metav1.NewTime(base), EurPerMWh: 50},
+		{At: metav1.NewTime(base.Add(time.Hour)), EurPerMWh: -5},
+		{At: metav1.NewTime(base.Add(2 * time.Hour)), EurPerMWh: 120},
+	}
+
+	tests := []struct {
+		name      string
+		strategy  greencostsv1alpha1.Strategy
+		wantPrice float64
+	}{
+		{
+			name:      "default strategy selects lowest price",
+			strategy:  "",
+			wantPrice: -5,
+		},
+		{
+			name:      "lowest price",
+			strategy:  greencostsv1alpha1.LowestPrice,
+			wantPrice: -5,
+		},
+		{
+			name:      "highest price",
+			strategy:  greencostsv1alpha1.HighestPrice,
+			wantPrice: 120,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := selectPricePoint(prices, tt.strategy)
+			if err != nil {
+				t.Fatalf("selectPricePoint() error = %v", err)
+			}
+			if got.EurPerMWh != tt.wantPrice {
+				t.Fatalf("selected price = %v, want %v", got.EurPerMWh, tt.wantPrice)
+			}
+		})
+	}
+}
+
+func TestSuspendHPAZeroTargetDetachesAndRestoresScaleTarget(t *testing.T) {
+	ctx := context.Background()
+	s := runtime.NewScheme()
+	if err := scheme.AddToScheme(s); err != nil {
+		t.Fatalf("adding Kubernetes types to scheme: %v", err)
+	}
+
+	minReplicas := int32(2)
+	hpa := &autoscalingv2.HorizontalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testWorkerName,
+			Namespace: testDefaultNamespace,
+		},
+		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
+			MinReplicas: &minReplicas,
+			MaxReplicas: 5,
+			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
+				APIVersion: "apps/v1",
+				Kind:       workloadKindDeployment,
+				Name:       testWorkerName,
+			},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(hpa).Build()
+
+	if err := suspendHPA(ctx, c, testDefaultNamespace, workloadKindDeployment, testWorkerName, 0); err != nil {
+		t.Fatalf("suspendHPA() error = %v", err)
+	}
+
+	var suspended autoscalingv2.HorizontalPodAutoscaler
+	if err := c.Get(ctx, client.ObjectKey{Namespace: testDefaultNamespace, Name: testWorkerName}, &suspended); err != nil {
+		t.Fatalf("getting suspended HPA: %v", err)
+	}
+	wantDetachedName := detachedHPATargetName(workloadKindDeployment, testWorkerName)
+	if got := suspended.Spec.ScaleTargetRef.Name; got != wantDetachedName {
+		t.Fatalf("scale target name = %q, want detached placeholder", got)
+	}
+	if len(wantDetachedName) > maxKubernetesLabelLength {
+		t.Fatalf("detached target name length = %d, want <= %d", len(wantDetachedName), maxKubernetesLabelLength)
+	}
+	if got := suspended.Spec.MinReplicas; got == nil || *got != 2 {
+		t.Fatalf("min replicas changed to %v, want original 2 while detached", got)
+	}
+	if got := suspended.Spec.MaxReplicas; got != 5 {
+		t.Fatalf("max replicas = %d, want original 5 while detached", got)
+	}
+	if got := suspended.Annotations[annotationOriginalHPATargetName]; got != testWorkerName {
+		t.Fatalf("stored original target = %q, want worker", got)
+	}
+
+	if err := restoreHPA(ctx, c, testDefaultNamespace, workloadKindDeployment, testWorkerName); err != nil {
+		t.Fatalf("restoreHPA() error = %v", err)
+	}
+
+	var restored autoscalingv2.HorizontalPodAutoscaler
+	if err := c.Get(ctx, client.ObjectKey{Namespace: testDefaultNamespace, Name: testWorkerName}, &restored); err != nil {
+		t.Fatalf("getting restored HPA: %v", err)
+	}
+	if restored.Spec.ScaleTargetRef.Name != testWorkerName {
+		t.Fatalf("restored target name = %q, want worker", restored.Spec.ScaleTargetRef.Name)
+	}
+	if restored.Annotations[annotationOriginalHPATargetName] != "" {
+		t.Fatalf("restore left target annotation behind: %v", restored.Annotations)
+	}
+}
+
+func TestDetachedHPATargetNameStaysShortForLongWorkloadNames(t *testing.T) {
+	longName := strings.Repeat("very-long-deployment-name-", 11) + "worker"
+	name := detachedHPATargetName(workloadKindDeployment, longName)
+
+	if len(name) > maxKubernetesLabelLength {
+		t.Fatalf("detached target name length = %d, want <= %d", len(name), maxKubernetesLabelLength)
+	}
+	if errs := validation.IsDNS1123Label(name); len(errs) > 0 {
+		t.Fatalf("detached target name %q is not a valid DNS-1123 label: %v", name, errs)
 	}
 }
 

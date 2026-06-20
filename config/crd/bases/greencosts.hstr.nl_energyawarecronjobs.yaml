@@ -8816,6 +8816,7 @@ spec:
                       within the window.
                     enum:
                     - LowestPrice
+                    - HighestPrice
                     type: string
                 required:
                 - estimatedDuration

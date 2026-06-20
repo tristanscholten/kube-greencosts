@@ -46,14 +46,27 @@ docker-push:
 	$(foreach tag,$(IMAGE_TAGS),$(CONTAINER_TOOL) push $(tag);)
 
 install:
-	$(KUBECTL) apply -f config/crd/bases
+	$(KUBECTL) apply --server-side --force-conflicts -f config/crd/bases
 
 uninstall:
 	$(KUBECTL) delete -f config/crd/bases --ignore-not-found
 
 deploy: install
-	cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMG)
-	$(KUBECTL) apply -k config/default
+	tmp_overlay=$$(mktemp -d config/.deploy-overlay.XXXXXX); \
+	trap 'rm -rf "$$tmp_overlay"' EXIT; \
+	printf '%s\n' \
+		'resources:' \
+		'  - ../default' \
+		'patches:' \
+		'  - target:' \
+		'      kind: Deployment' \
+		'      name: kube-greencosts-controller-manager' \
+		'    patch: |-' \
+		'      - op: replace' \
+		'        path: /spec/template/spec/containers/0/image' \
+		'        value: $(IMG)' \
+		> "$$tmp_overlay/kustomization.yaml"; \
+	$(KUBECTL) apply --server-side --force-conflicts -k "$$tmp_overlay"
 
 undeploy:
 	$(KUBECTL) delete -k config/default --ignore-not-found

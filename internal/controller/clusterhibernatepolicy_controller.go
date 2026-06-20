@@ -383,6 +383,9 @@ func (r *ClusterHibernatePolicyReconciler) hibernateWorkload(
 			return false, client.IgnoreNotFound(err)
 		}
 		if d.Annotations[annotationHibernated] == annotationTrueValue {
+			if err := suspendHPAForAction(ctx, r.Client, ref.Namespace, workloadKindDeployment, ref.Name, action); err != nil {
+				return true, err
+			}
 			return true, nil
 		}
 		current := int32(1)
@@ -413,6 +416,9 @@ func (r *ClusterHibernatePolicyReconciler) hibernateWorkload(
 			return false, client.IgnoreNotFound(err)
 		}
 		if s.Annotations[annotationHibernated] == annotationTrueValue {
+			if err := suspendHPAForAction(ctx, r.Client, ref.Namespace, workloadKindStatefulSet, ref.Name, action); err != nil {
+				return true, err
+			}
 			return true, nil
 		}
 		current := int32(1)
@@ -470,6 +476,9 @@ func (r *ClusterHibernatePolicyReconciler) hibernateWorkload(
 			return false, client.IgnoreNotFound(err)
 		}
 		if rs.Annotations[annotationHibernated] == annotationTrueValue {
+			if err := suspendHPAForAction(ctx, r.Client, ref.Namespace, workloadKindReplicaSet, ref.Name, action); err != nil {
+				return true, err
+			}
 			return true, nil
 		}
 		current := int32(1)

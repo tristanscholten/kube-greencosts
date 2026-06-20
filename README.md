@@ -91,7 +91,9 @@ Key metrics:
 
 ### Distributed tracing
 
-Tracing is **always on**. The operator exports spans via OTLP gRPC to `localhost:4317` by default (the [OTel SDK default](https://opentelemetry.io/docs/specs/otel/protocol/exporter/)). If no collector is reachable the exporter retries silently in the background — the operator keeps running and drops spans without any impact.
+Tracing is opt-in. By default the operator uses a no-op tracer provider and
+does not attempt to connect to `localhost:4317`. Set
+`OTEL_EXPORTER_OTLP_ENDPOINT` to export spans via OTLP gRPC.
 
 Point it at your collector with a single env var:
 
@@ -107,7 +109,7 @@ All standard [OTel SDK environment variables](https://opentelemetry.io/docs/spec
 
 | Environment variable | Default | Description |
 |----------------------|---------|-------------|
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | OTLP gRPC collector endpoint |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | _(unset)_ | OTLP gRPC collector endpoint. Tracing exporter is disabled until this is set |
 | `OTEL_SERVICE_NAME` | `kube-greencosts` | Service name shown in trace UIs |
 | `OTEL_RESOURCE_ATTRIBUTES` | _(unset)_ | Comma-separated extra attributes, e.g. `k8s.cluster.name=prod` |
 | `OTEL_EXPORTER_OTLP_HEADERS` | _(unset)_ | Auth headers, e.g. `Authorization=Bearer <token>` |
@@ -121,7 +123,7 @@ All standard [OTel SDK environment variables](https://opentelemetry.io/docs/spec
 
 | `OTEL_TRACES_SAMPLER` | Behaviour |
 |-----------------------|-----------|
-| `always_on` _(default)_ | Record every span |
+| `always_on` _(default when exporter is enabled)_ | Record every span |
 | `always_off` | Disable tracing entirely — zero overhead |
 | `traceidratio` | Sample `OTEL_TRACES_SAMPLER_ARG` fraction of traces (e.g. `0.1` = 10 %) |
 | `parentbased_always_on` | Always sample; respect parent decision |
@@ -311,7 +313,7 @@ spec:
 | Field | Description |
 |---|---|
 | `.status.lastUpdated` | Timestamp of the last successful fetch |
-| `.status.prices[]` | Array of `{start, end, eurPerMWh}` intervals |
+| `.status.prices[]` | Array of `{at, eurPerMWh}` price points. Each point is valid until the next point starts |
 | `.status.conditions[]` | Standard Kubernetes condition array (type `Ready`) |
 
 **Status fields** — `EnergyAwareCronJob`
@@ -414,8 +416,9 @@ spec:
     # maxReplicas caps Deployments, StatefulSets and ReplicaSets to N replicas.
     # Set to 0 to scale them completely to zero.
     # Workloads already at or below the cap are left unchanged (no-op).
-    # Any HPA targeting an affected workload is suspended to the same cap and
-    # restored on wake. Has NO effect on DaemonSets.
+    # Any HPA targeting an affected workload is suspended and restored on wake.
+    # For maxReplicas: 0, the HPA is temporarily detached from the workload
+    # because Kubernetes HPAs cannot have zero replica bounds.
     maxReplicas: 0
 ```
 
@@ -428,7 +431,7 @@ spec:
 | `availabilityWindows[].until` | ✅ | Wall-clock end time (HH:MM) in the given timezone |
 | `availabilityWindows[].timezone` | | IANA timezone name. Default: `UTC` |
 | `action.sleepDaemonSet` | | Hibernates **DaemonSets only** via nodeSelector injection. Default: `false`. No effect on other workload types |
-| `action.maxReplicas` | | Caps **Deployments, StatefulSets and ReplicaSets** to N replicas. Set to `0` to scale them to zero. HPAs are suspended to the same cap. No effect on DaemonSets |
+| `action.maxReplicas` | | Caps **Deployments, StatefulSets and ReplicaSets** to N replicas. Set to `0` to scale them to zero. HPAs are suspended and restored on wake; for zero, the HPA is temporarily detached because HPA replica bounds must be positive. No effect on DaemonSets |
 
 ---
 
@@ -479,7 +482,7 @@ kubectl annotate namespace staging greencosts.hstr.nl/clusterhibernatepolicy=bus
 |---|---|---|
 | `availabilityWindows` | | Same structure as `HibernatePolicy` |
 | `action.sleepDaemonSet` | | Hibernates **DaemonSets only** via nodeSelector injection. Default: `false`. No effect on other workload types |
-| `action.maxReplicas` | | Caps **Deployments, StatefulSets and ReplicaSets** to N replicas. Set to `0` to scale to zero. HPAs are suspended. No effect on DaemonSets |
+| `action.maxReplicas` | | Caps **Deployments, StatefulSets and ReplicaSets** to N replicas. Set to `0` to scale to zero. HPAs are suspended and restored; zero detaches the HPA target temporarily with a short hashed placeholder because HPA replica bounds must be positive. No effect on DaemonSets |
 | `includedResources` | | Restrict the policy to only these workload kinds. Mutually exclusive with `excludedResources` |
 | `excludedResources` | | Prevent the policy from affecting these workload kinds. Mutually exclusive with `includedResources` |
 
@@ -492,11 +495,18 @@ kubectl annotate namespace staging greencosts.hstr.nl/clusterhibernatepolicy=bus
 | `greencosts.hstr.nl/original-replicas` | `Deployment`, `StatefulSet`, standalone `ReplicaSet` | Stores the original replica count before hibernation so wake-up restores it |
 | `greencosts.hstr.nl/original-nodeselector` | `DaemonSet` | Stores the original node selector before DaemonSet hibernation |
 | `greencosts.hstr.nl/original-hpa-min` / `greencosts.hstr.nl/original-hpa-max` | `HorizontalPodAutoscaler` | Stores HPA replica bounds while an affected workload is hibernated |
+| `greencosts.hstr.nl/original-hpa-target-*` | `HorizontalPodAutoscaler` | Stores the original HPA scale target when `maxReplicas: 0` detaches the HPA during hibernation |
 
 Namespace annotations apply to every supported workload in that namespace unless
 the workload has its own `greencosts.hstr.nl/clusterhibernatepolicy` annotation.
 When a workload annotation is present, it wins over the namespace annotation,
 including when it points to another policy.
+
+For `maxReplicas: 0`, the temporary HPA target name is intentionally short and
+hash-based (`kube-greencosts-hibernated-<hash>`). The controller does not append
+the workload name, so long Kubernetes object names do not overflow name limits.
+The original target is preserved in `greencosts.hstr.nl/original-hpa-target-*`
+annotations and restored when the workload wakes.
 
 `EnergyAwareCronJob` also preserves annotations from
 `spec.cronJob.jobTemplate.metadata.annotations` on the Jobs it creates, so
@@ -619,8 +629,13 @@ make bump-patch   # or bump-minor / bump-major
 make setup-envtest
 make test
 
-# Run e2e tests against a disposable Kind cluster
+# Run e2e tests. By default this uses Kind when available, otherwise it imports
+# the image into the local k3s container named openclaw-k3s.
 make test-e2e
+
+# Force a specific e2e image loader when needed.
+E2E_IMAGE_LOADER=kind make test-e2e
+E2E_IMAGE_LOADER=k3s-container E2E_K3S_CONTAINER=openclaw-k3s make test-e2e
 
 # Build and deploy to your current kubectl context
 make docker-build

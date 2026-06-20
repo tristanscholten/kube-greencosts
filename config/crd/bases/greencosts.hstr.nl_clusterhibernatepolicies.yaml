@@ -70,9 +70,11 @@ spec:
                       MaxReplicas caps each Deployment, StatefulSet and ReplicaSet to the given
                       replica count during hibernation. Workloads already at or below this value
                       are left unchanged (no-op). Set to 0 to scale them completely to zero.
-                      When set, any HPA targeting an affected workload is suspended: its
-                      minReplicas and maxReplicas are both clamped to MaxReplicas and the
-                      originals are stored in annotations on the HPA for restoration on wake.
+                      When set, any HPA targeting an affected workload is suspended: positive
+                      caps clamp minReplicas and maxReplicas to MaxReplicas, while a zero cap
+                      temporarily detaches the HPA scaleTargetRef using a short deterministic
+                      placeholder name. Original HPA bounds and targets are stored in annotations
+                      for restoration on wake.
 
                       This field has NO effect on DaemonSets. Use SleepDaemonSet to hibernate
                       DaemonSets.
