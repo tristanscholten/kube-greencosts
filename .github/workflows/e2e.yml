@@ -7,7 +7,7 @@ on:
 
 jobs:
   e2e:
-    name: Local kind e2e
+    name: Local k3s e2e
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -22,12 +22,38 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Create kind cluster
-        uses: helm/kind-action@v1.12.0
-        with:
-          cluster_name: kind
+      - name: Set up kubectl
+        run: |
+          curl -fsSLo kubectl https://dl.k8s.io/release/v1.33.0/bin/linux/amd64/kubectl
+          sudo install -m 0755 kubectl /usr/local/bin/kubectl
+
+      - name: Install Podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+
+      - name: Create k3s cluster
+        run: |
+          sudo podman run --detach --name openclaw-k3s --privileged \
+            --publish 127.0.0.1:6443:6443 \
+            docker.io/rancher/k3s:v1.33.0-k3s1 server \
+            --disable traefik \
+            --tls-san 127.0.0.1 \
+            --write-kubeconfig-mode 644
+          mkdir -p "${RUNNER_TEMP}/kube"
+          for _ in {1..60}; do
+            if sudo podman exec openclaw-k3s cat /etc/rancher/k3s/k3s.yaml > "${RUNNER_TEMP}/kube/config"; then
+              sed -i 's/127.0.0.1/127.0.0.1/g' "${RUNNER_TEMP}/kube/config"
+              KUBECONFIG="${RUNNER_TEMP}/kube/config" kubectl get nodes && exit 0
+            fi
+            sleep 2
+          done
+          sudo podman logs openclaw-k3s
+          exit 1
 
       - name: Run e2e suite
         env:
-          E2E_IMAGE_LOADER: kind
+          KUBECONFIG: ${{ runner.temp }}/kube/config
+          E2E_IMAGE_LOADER: k3s-container
+          E2E_K3S_CONTAINER: openclaw-k3s
         run: go test ./test/e2e -count=1 -timeout=15m
