@@ -146,6 +146,13 @@ func TestSelectPricePoint(t *testing.T) {
 	}
 }
 
+func TestParseHHMMRejectsTrailingText(t *testing.T) {
+	_, err := parseHHMM("09:00x", time.Date(2026, 6, 21, 0, 0, 0, 0, time.UTC), time.UTC)
+	if err == nil {
+		t.Fatal("parseHHMM() accepted trailing text")
+	}
+}
+
 func TestSuspendHPAZeroTargetDetachesAndRestoresScaleTarget(t *testing.T) {
 	ctx := context.Background()
 	s := runtime.NewScheme()

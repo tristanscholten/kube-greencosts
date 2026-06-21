@@ -53,14 +53,11 @@ const (
 
 // parseHHMM parses an "HH:MM" string and returns a time.Time on the given date in loc.
 func parseHHMM(hhmm string, date time.Time, loc *time.Location) (time.Time, error) {
-	var h, m int
-	if _, err := fmt.Sscanf(hhmm, "%d:%d", &h, &m); err != nil {
+	t, err := time.ParseInLocation("15:04", hhmm, loc)
+	if err != nil {
 		return time.Time{}, fmt.Errorf("parsing %q as HH:MM: %w", hhmm, err)
 	}
-	if h < 0 || h > 23 || m < 0 || m > 59 {
-		return time.Time{}, fmt.Errorf("%q is not a valid HH:MM time", hhmm)
-	}
-	return time.Date(date.Year(), date.Month(), date.Day(), h, m, 0, 0, loc), nil
+	return time.Date(date.Year(), date.Month(), date.Day(), t.Hour(), t.Minute(), 0, 0, loc), nil
 }
 
 // computeTargetReplicas returns the target replica count and whether a scale-down
