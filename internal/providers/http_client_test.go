@@ -14,6 +14,8 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
+const tokenQueryKey = "token"
+
 func TestRedactedHTTPClientKeepsSecretsOutOfSpanAttributes(t *testing.T) {
 	const token = "super-secret-token"
 
@@ -28,12 +30,12 @@ func TestRedactedHTTPClientKeepsSecretsOutOfSpanAttributes(t *testing.T) {
 
 	var receivedToken string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedToken = r.URL.Query().Get("token")
+		receivedToken = r.URL.Query().Get(tokenQueryKey)
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
 
-	client := NewRedactedHTTPClient(time.Second, "token")
+	client := NewRedactedHTTPClient(time.Second, tokenQueryKey)
 
 	resp, err := client.Get(server.URL + "/prices?token=" + token + "&resolution=15")
 	if err != nil {
@@ -74,7 +76,7 @@ func TestRedactedURLRedactsOnlyConfiguredQueryKeys(t *testing.T) {
 }
 
 func TestRedactedHTTPClientKeepsRedactionKeysImmutable(t *testing.T) {
-	keys := []string{"token"}
+	keys := []string{tokenQueryKey}
 	client := NewRedactedHTTPClient(time.Second, keys...)
 	keys[0] = "other"
 
@@ -96,12 +98,12 @@ func TestRedactedHTTPClientKeepsRedactionKeysImmutable(t *testing.T) {
 }
 
 func TestRedactedURLHandlesEmptyInputs(t *testing.T) {
-	if got := redactedURL(nil, []string{"token"}); got != "" {
+	if got := redactedURL(nil, []string{tokenQueryKey}); got != "" {
 		t.Fatalf("redactedURL(nil) = %q, want empty string", got)
 	}
 
 	const raw = "https://example.test/path"
-	if got := redactedURL(mustParseURL(t, raw), []string{"token"}); got != raw {
+	if got := redactedURL(mustParseURL(t, raw), []string{tokenQueryKey}); got != raw {
 		t.Fatalf("redactedURL() = %q, want %q", got, raw)
 	}
 }

@@ -98,7 +98,8 @@ func InstallCertManager() error {
 	cmd = exec.Command("bash", "-c", `
 set -euo pipefail
 for _ in $(seq 1 180); do
-	if kubectl get validatingwebhookconfiguration/cert-manager-webhook -o jsonpath='{.webhooks[0].clientConfig.caBundle}' | grep -q .; then
+	if kubectl get validatingwebhookconfiguration/cert-manager-webhook \
+		-o jsonpath='{.webhooks[0].clientConfig.caBundle}' | grep -q .; then
 		exit 0
 	fi
 	sleep 1
