@@ -23,7 +23,9 @@ jobs:
           cache: true
 
       - name: Set up kubectl
-        uses: azure/setup-kubectl@v4
+        run: |
+          curl -fsSLo kubectl https://dl.k8s.io/release/v1.33.0/bin/linux/amd64/kubectl
+          sudo install -m 0755 kubectl /usr/local/bin/kubectl
 
       - name: Install Podman
         run: |
