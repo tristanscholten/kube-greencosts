@@ -28,11 +28,7 @@ import (
 )
 
 const (
-	prometheusOperatorVersion = "v0.77.1"
-	prometheusOperatorURL     = "https://github.com/prometheus-operator/prometheus-operator/" +
-		"releases/download/%s/bundle.yaml"
-
-	certmanagerVersion = "v1.16.3"
+	certmanagerVersion = "v1.20.2"
 	certmanagerURLTmpl = "https://github.com/cert-manager/cert-manager/releases/download/%s/cert-manager.yaml"
 )
 
@@ -42,7 +38,10 @@ func warnError(err error) {
 
 // Run executes the provided command within this context
 func Run(cmd *exec.Cmd) (string, error) {
-	dir, _ := GetProjectDir()
+	dir, err := GetProjectDir()
+	if err != nil {
+		return "", err
+	}
 	cmd.Dir = dir
 
 	if err := os.Chdir(cmd.Dir); err != nil {
@@ -58,50 +57,6 @@ func Run(cmd *exec.Cmd) (string, error) {
 	}
 
 	return string(output), nil
-}
-
-// InstallPrometheusOperator installs the prometheus Operator to be used to export the enabled metrics.
-func InstallPrometheusOperator() error {
-	url := fmt.Sprintf(prometheusOperatorURL, prometheusOperatorVersion)
-	cmd := exec.Command("kubectl", "create", "-f", url)
-	_, err := Run(cmd)
-	return err
-}
-
-// UninstallPrometheusOperator uninstalls the prometheus
-func UninstallPrometheusOperator() {
-	url := fmt.Sprintf(prometheusOperatorURL, prometheusOperatorVersion)
-	cmd := exec.Command("kubectl", "delete", "-f", url)
-	if _, err := Run(cmd); err != nil {
-		warnError(err)
-	}
-}
-
-// IsPrometheusCRDsInstalled checks if any Prometheus CRDs are installed
-// by verifying the existence of key CRDs related to Prometheus.
-func IsPrometheusCRDsInstalled() bool {
-	// List of common Prometheus CRDs
-	prometheusCRDs := []string{
-		"prometheuses.monitoring.coreos.com",
-		"prometheusrules.monitoring.coreos.com",
-		"prometheusagents.monitoring.coreos.com",
-	}
-
-	cmd := exec.Command("kubectl", "get", "crds", "-o", "custom-columns=NAME:.metadata.name")
-	output, err := Run(cmd)
-	if err != nil {
-		return false
-	}
-	crdList := GetNonEmptyLines(output)
-	for _, crd := range prometheusCRDs {
-		for _, line := range crdList {
-			if strings.Contains(line, crd) {
-				return true
-			}
-		}
-	}
-
-	return false
 }
 
 // UninstallCertManager uninstalls the cert manager
@@ -127,7 +82,31 @@ func InstallCertManager() error {
 		"--namespace", "cert-manager",
 		"--timeout", "5m",
 	)
+	if _, err := Run(cmd); err != nil {
+		return err
+	}
 
+	cmd = exec.Command("kubectl", "wait", "apiservice/v1.cert-manager.io",
+		"--for", "condition=Available",
+		"--timeout", "5m",
+	)
+	if _, err := Run(cmd); err != nil {
+		return err
+	}
+
+	// cert-manager can report ready before cainjector fills the admission CA.
+	cmd = exec.Command("bash", "-c", `
+set -euo pipefail
+for _ in $(seq 1 180); do
+	if kubectl get validatingwebhookconfiguration/cert-manager-webhook \
+		-o jsonpath='{.webhooks[0].clientConfig.caBundle}' | grep -q .; then
+		exit 0
+	fi
+	sleep 1
+done
+echo "timed out waiting for cert-manager validating webhook caBundle" >&2
+exit 1
+`)
 	_, err := Run(cmd)
 	return err
 }
@@ -213,7 +192,7 @@ func LoadImageToK3sContainerWithName(name string) error {
 
 	cmd := exec.Command("bash", "-c",
 		fmt.Sprintf(
-			"podman save %s | sudo podman exec -i %s ctr images import -",
+			"podman save %s | sudo podman exec -i %s ctr -n k8s.io images import -",
 			shellQuote(name),
 			shellQuote(container),
 		),
@@ -246,7 +225,7 @@ func GetProjectDir() (string, error) {
 	if err != nil {
 		return wd, fmt.Errorf("failed to get current working directory: %w", err)
 	}
-	wd = strings.ReplaceAll(wd, "/test/e2e", "")
+	wd = strings.TrimSuffix(wd, "/test/e2e")
 	return wd, nil
 }
 

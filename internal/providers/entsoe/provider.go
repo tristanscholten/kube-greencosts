@@ -29,7 +29,6 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"time"
@@ -210,7 +209,7 @@ func (p *Provider) FetchPrices(ctx context.Context, req providers.FetchPricesReq
 		}
 	}()
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
+	body, err := providers.ReadLimitedBody(resp.Body, maxBodyBytes)
 	if err != nil {
 		return nil, fmt.Errorf("reading ENTSO-E response: %w", err)
 	}

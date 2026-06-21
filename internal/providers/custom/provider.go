@@ -36,7 +36,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"time"
@@ -149,7 +148,7 @@ func (p *Provider) FetchPrices(ctx context.Context, req providers.FetchPricesReq
 		return nil, fmt.Errorf("provider returned HTTP %d for %q", resp.StatusCode, p.url)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
+	body, err := providers.ReadLimitedBody(resp.Body, maxBodyBytes)
 	if err != nil {
 		return nil, fmt.Errorf("reading response body from %q: %w", p.url, err)
 	}

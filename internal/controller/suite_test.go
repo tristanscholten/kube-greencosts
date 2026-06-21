@@ -56,7 +56,7 @@ func TestControllers(t *testing.T) {
 var _ = BeforeSuite(func() {
 	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true)))
 
-	ctx, cancel = context.WithCancel(context.TODO())
+	ctx, cancel = context.WithCancel(context.Background())
 
 	var err error
 	err = greencostsv1alpha1.AddToScheme(scheme.Scheme)
@@ -71,8 +71,8 @@ var _ = BeforeSuite(func() {
 	}
 
 	// Retrieve the first found binary directory to allow running tests from IDEs
-	if getFirstFoundEnvTestBinaryDir() != "" {
-		testEnv.BinaryAssetsDirectory = getFirstFoundEnvTestBinaryDir()
+	if binaryDir := getFirstFoundEnvTestBinaryDir(); binaryDir != "" {
+		testEnv.BinaryAssetsDirectory = binaryDir
 	}
 
 	// cfg is defined in this file globally.

@@ -1,6 +1,8 @@
 package providers
 
 import (
+	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"slices"
@@ -21,7 +23,7 @@ func NewRedactedHTTPClient(timeout time.Duration, redactQueryKeys ...string) *ht
 	return &http.Client{
 		Transport: redactingTransport{
 			base:            http.DefaultTransport,
-			redactQueryKeys: redactQueryKeys,
+			redactQueryKeys: slices.Clone(redactQueryKeys),
 		},
 		Timeout: timeout,
 	}
@@ -91,4 +93,15 @@ func statusCode(code int) codes.Code {
 		return codes.Error
 	}
 	return codes.Unset
+}
+
+func ReadLimitedBody(r io.Reader, maxBytes int64) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(r, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > maxBytes {
+		return nil, fmt.Errorf("response body exceeds %d bytes", maxBytes)
+	}
+	return body, nil
 }

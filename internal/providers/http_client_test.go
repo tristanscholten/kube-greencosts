@@ -14,6 +14,8 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
+const tokenQueryKey = "token"
+
 func TestRedactedHTTPClientKeepsSecretsOutOfSpanAttributes(t *testing.T) {
 	const token = "super-secret-token"
 
@@ -28,12 +30,12 @@ func TestRedactedHTTPClientKeepsSecretsOutOfSpanAttributes(t *testing.T) {
 
 	var receivedToken string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedToken = r.URL.Query().Get("token")
+		receivedToken = r.URL.Query().Get(tokenQueryKey)
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
 
-	client := NewRedactedHTTPClient(time.Second, "token")
+	client := NewRedactedHTTPClient(time.Second, tokenQueryKey)
 
 	resp, err := client.Get(server.URL + "/prices?token=" + token + "&resolution=15")
 	if err != nil {
@@ -70,6 +72,57 @@ func TestRedactedURLRedactsOnlyConfiguredQueryKeys(t *testing.T) {
 	}
 	if !strings.Contains(got, "area=NL") {
 		t.Fatalf("redacted URL removed non-secret query param: %q", got)
+	}
+}
+
+func TestRedactedHTTPClientKeepsRedactionKeysImmutable(t *testing.T) {
+	keys := []string{tokenQueryKey}
+	client := NewRedactedHTTPClient(time.Second, keys...)
+	keys[0] = "other"
+
+	transport, ok := client.Transport.(redactingTransport)
+	if !ok {
+		t.Fatalf("client transport = %T, want redactingTransport", client.Transport)
+	}
+
+	got := redactedURL(
+		mustParseURL(t, "https://example.test/path?token=secret&other=visible"),
+		transport.redactQueryKeys,
+	)
+	if strings.Contains(got, "secret") {
+		t.Fatalf("redacted URL leaked secret after caller mutation: %q", got)
+	}
+	if !strings.Contains(got, "other=visible") {
+		t.Fatalf("redacted URL used mutated caller key: %q", got)
+	}
+}
+
+func TestRedactedURLHandlesEmptyInputs(t *testing.T) {
+	if got := redactedURL(nil, []string{tokenQueryKey}); got != "" {
+		t.Fatalf("redactedURL(nil) = %q, want empty string", got)
+	}
+
+	const raw = "https://example.test/path"
+	if got := redactedURL(mustParseURL(t, raw), []string{tokenQueryKey}); got != raw {
+		t.Fatalf("redactedURL() = %q, want %q", got, raw)
+	}
+}
+
+func TestReadLimitedBody(t *testing.T) {
+	body, err := ReadLimitedBody(strings.NewReader("1234"), 4)
+	if err != nil {
+		t.Fatalf("ReadLimitedBody() exact limit error = %v", err)
+	}
+	if string(body) != "1234" {
+		t.Fatalf("ReadLimitedBody() exact limit body = %q, want 1234", body)
+	}
+
+	_, err = ReadLimitedBody(strings.NewReader("12345"), 4)
+	if err == nil {
+		t.Fatal("ReadLimitedBody() accepted oversized body")
+	}
+	if !strings.Contains(err.Error(), "exceeds 4 bytes") {
+		t.Fatalf("ReadLimitedBody() error = %q, want size limit", err)
 	}
 }
 

@@ -32,7 +32,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -185,7 +184,7 @@ func (p *Provider) fetchDay(ctx context.Context, day string) (pts []greencostsv1
 		return nil, fmt.Errorf("enever API returned HTTP %d for %s", resp.StatusCode, day)
 	}
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
+	body, err := providers.ReadLimitedBody(resp.Body, maxBodyBytes)
 	if err != nil {
 		return nil, fmt.Errorf("reading enever response for %s: %w", day, err)
 	}
