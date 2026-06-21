@@ -37,13 +37,13 @@ var (
 	// isCertManagerAlreadyInstalled will be set true when CertManager CRDs be found on the cluster
 	isCertManagerAlreadyInstalled = false
 
-	// projectImage is the name of the image which will be build and loaded
-	// with the code source changes to be tested.
+	// projectImage is the image built from the current source and loaded into
+	// the e2e cluster.
 	projectImage = envOrDefault("E2E_PROJECT_IMAGE", "example.com/kube-greencosts:v0.0.1")
 )
 
 // TestE2E runs the end-to-end (e2e) test suite for the project. These tests execute in an isolated,
-// temporary environment to validate project changes with the purposed to be used in CI jobs.
+// temporary environment to validate project changes for CI jobs.
 // The default setup requires Kind, builds/loads the Manager Docker image locally, and installs
 // CertManager.
 func TestE2E(t *testing.T) {
