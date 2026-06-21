@@ -28,7 +28,7 @@ import (
 )
 
 const (
-	certmanagerVersion = "v1.16.3"
+	certmanagerVersion = "v1.20.2"
 	certmanagerURLTmpl = "https://github.com/cert-manager/cert-manager/releases/download/%s/cert-manager.yaml"
 )
 
@@ -79,7 +79,30 @@ func InstallCertManager() error {
 		"--namespace", "cert-manager",
 		"--timeout", "5m",
 	)
+	if _, err := Run(cmd); err != nil {
+		return err
+	}
 
+	cmd = exec.Command("kubectl", "wait", "apiservice/v1.cert-manager.io",
+		"--for", "condition=Available",
+		"--timeout", "5m",
+	)
+	if _, err := Run(cmd); err != nil {
+		return err
+	}
+
+	// cert-manager can report ready before cainjector fills the admission CA.
+	cmd = exec.Command("bash", "-c", `
+set -euo pipefail
+for _ in $(seq 1 180); do
+	if kubectl get validatingwebhookconfiguration/cert-manager-webhook -o jsonpath='{.webhooks[0].clientConfig.caBundle}' | grep -q .; then
+		exit 0
+	fi
+	sleep 1
+done
+echo "timed out waiting for cert-manager validating webhook caBundle" >&2
+exit 1
+`)
 	_, err := Run(cmd)
 	return err
 }
