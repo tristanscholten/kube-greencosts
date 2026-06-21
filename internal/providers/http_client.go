@@ -23,7 +23,7 @@ func NewRedactedHTTPClient(timeout time.Duration, redactQueryKeys ...string) *ht
 	return &http.Client{
 		Transport: redactingTransport{
 			base:            http.DefaultTransport,
-			redactQueryKeys: redactQueryKeys,
+			redactQueryKeys: slices.Clone(redactQueryKeys),
 		},
 		Timeout: timeout,
 	}

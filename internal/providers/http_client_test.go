@@ -73,6 +73,28 @@ func TestRedactedURLRedactsOnlyConfiguredQueryKeys(t *testing.T) {
 	}
 }
 
+func TestRedactedHTTPClientKeepsRedactionKeysImmutable(t *testing.T) {
+	keys := []string{"token"}
+	client := NewRedactedHTTPClient(time.Second, keys...)
+	keys[0] = "other"
+
+	transport, ok := client.Transport.(redactingTransport)
+	if !ok {
+		t.Fatalf("client transport = %T, want redactingTransport", client.Transport)
+	}
+
+	got := redactedURL(
+		mustParseURL(t, "https://example.test/path?token=secret&other=visible"),
+		transport.redactQueryKeys,
+	)
+	if strings.Contains(got, "secret") {
+		t.Fatalf("redacted URL leaked secret after caller mutation: %q", got)
+	}
+	if !strings.Contains(got, "other=visible") {
+		t.Fatalf("redacted URL used mutated caller key: %q", got)
+	}
+}
+
 func TestRedactedURLHandlesEmptyInputs(t *testing.T) {
 	if got := redactedURL(nil, []string{"token"}); got != "" {
 		t.Fatalf("redactedURL(nil) = %q, want empty string", got)
