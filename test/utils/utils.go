@@ -38,7 +38,10 @@ func warnError(err error) {
 
 // Run executes the provided command within this context
 func Run(cmd *exec.Cmd) (string, error) {
-	dir, _ := GetProjectDir()
+	dir, err := GetProjectDir()
+	if err != nil {
+		return "", err
+	}
 	cmd.Dir = dir
 
 	if err := os.Chdir(cmd.Dir); err != nil {
@@ -188,7 +191,7 @@ func LoadImageToK3sContainerWithName(name string) error {
 
 	cmd := exec.Command("bash", "-c",
 		fmt.Sprintf(
-			"podman save %s | sudo podman exec -i %s ctr images import -",
+			"podman save %s | sudo podman exec -i %s ctr -n k8s.io images import -",
 			shellQuote(name),
 			shellQuote(container),
 		),
