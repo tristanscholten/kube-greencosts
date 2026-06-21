@@ -34,7 +34,7 @@ var (
 	// These variables are useful if CertManager is already installed, avoiding
 	// re-installation and conflicts.
 	skipCertManagerInstall = os.Getenv("CERT_MANAGER_INSTALL_SKIP") == "true"
-	// isCertManagerAlreadyInstalled will be set true when CertManager CRDs be found on the cluster
+	// isCertManagerAlreadyInstalled is set when CertManager CRDs are found on the cluster.
 	isCertManagerAlreadyInstalled = false
 
 	// projectImage is the image built from the current source and loaded into
@@ -65,7 +65,7 @@ var _ = BeforeSuite(func() {
 	// The tests-e2e are intended to run on a temporary cluster that is created and destroyed for testing.
 	// To prevent errors when tests run in environments with CertManager already installed,
 	// we check for its presence before execution.
-	// Setup CertManager before the suite if not skipped and if not already installed
+	// Set up CertManager before the suite if not skipped and if not already installed.
 	if !skipCertManagerInstall {
 		By("checking if cert manager is installed already")
 		isCertManagerAlreadyInstalled = utils.IsCertManagerCRDsInstalled()
