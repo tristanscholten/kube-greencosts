@@ -479,6 +479,130 @@ spec:
 			})
 		})
 
+		It("should hibernate and wake non-Deployment workloads", func() {
+			const testNamespace = "kube-greencosts-e2e-workloads"
+			createNamespace(testNamespace)
+			DeferCleanup(deleteNamespace, testNamespace)
+
+			applyYAML(testNamespace, `
+apiVersion: v1
+kind: Service
+metadata:
+  name: hp-stateful
+spec:
+  clusterIP: None
+  selector:
+    app: hp-stateful
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: hp-stateful
+spec:
+  serviceName: hp-stateful
+  replicas: 2
+  selector:
+    matchLabels:
+      app: hp-stateful
+  template:
+    metadata:
+      labels:
+        app: hp-stateful
+    spec:
+      containers:
+      - name: pause
+        image: registry.k8s.io/pause:3.10
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: hp-daemon
+spec:
+  selector:
+    matchLabels:
+      app: hp-daemon
+  template:
+    metadata:
+      labels:
+        app: hp-daemon
+    spec:
+      nodeSelector:
+        kubernetes.io/os: linux
+      containers:
+      - name: pause
+        image: registry.k8s.io/pause:3.10
+---
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: hp-replicaset
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: hp-replicaset
+  template:
+    metadata:
+      labels:
+        app: hp-replicaset
+    spec:
+      containers:
+      - name: pause
+        image: registry.k8s.io/pause:3.10
+---
+apiVersion: greencosts.hstr.nl/v1alpha1
+kind: HibernatePolicy
+metadata:
+  name: hp-workloads
+spec:
+  workloadTypes: [StatefulSet, DaemonSet, ReplicaSet]
+  action:
+    sleepDaemonSet: true
+    maxReplicas: 0
+`)
+
+			waitFor("hibernate non-Deployment workloads", func(g Gomega) {
+				statefulReplicas := kubectl("get", "statefulset", "hp-stateful", "-n", testNamespace,
+					"-o", `jsonpath={.spec.replicas}`)
+				replicaSetReplicas := kubectl("get", "replicaset", "hp-replicaset", "-n", testNamespace,
+					"-o", `jsonpath={.spec.replicas}`)
+				daemonSelector := kubectl("get", "daemonset", "hp-daemon", "-n", testNamespace,
+					"-o", `jsonpath={.spec.template.spec.nodeSelector.greencosts\.hstr\.nl/hibernate}`)
+				daemonOriginalSelector := kubectl("get", "daemonset", "hp-daemon", "-n", testNamespace,
+					"-o", `jsonpath={.metadata.annotations.greencosts\.hstr\.nl/original-nodeselector}`)
+				status := kubectl("get", "hibernatepolicy", "hp-workloads", "-n", testNamespace,
+					"-o", `jsonpath={.status.hibernatedWorkloads}`)
+				g.Expect(statefulReplicas).To(Equal("0"))
+				g.Expect(replicaSetReplicas).To(Equal("0"))
+				g.Expect(daemonSelector).To(Equal("true"))
+				g.Expect(daemonOriginalSelector).To(ContainSubstring("kubernetes.io/os"))
+				g.Expect(status).To(ContainSubstring("StatefulSet/hp-stateful"))
+				g.Expect(status).To(ContainSubstring("DaemonSet/hp-daemon"))
+				g.Expect(status).To(ContainSubstring("ReplicaSet/hp-replicaset"))
+			})
+
+			kubectl("patch", "hibernatepolicy", "hp-workloads", "-n", testNamespace,
+				"--type=merge", "-p", currentAvailabilityWindowPatch())
+
+			waitFor("wake non-Deployment workloads", func(g Gomega) {
+				statefulReplicas := kubectl("get", "statefulset", "hp-stateful", "-n", testNamespace,
+					"-o", `jsonpath={.spec.replicas}`)
+				replicaSetReplicas := kubectl("get", "replicaset", "hp-replicaset", "-n", testNamespace,
+					"-o", `jsonpath={.spec.replicas}`)
+				daemonSelector := kubectl("get", "daemonset", "hp-daemon", "-n", testNamespace,
+					"-o", `jsonpath={.spec.template.spec.nodeSelector.kubernetes\.io/os}`)
+				daemonHibernateSelector := kubectl("get", "daemonset", "hp-daemon", "-n", testNamespace,
+					"-o", `jsonpath={.spec.template.spec.nodeSelector.greencosts\.hstr\.nl/hibernate}`)
+				status := kubectl("get", "hibernatepolicy", "hp-workloads", "-n", testNamespace,
+					"-o", `jsonpath={.status.hibernatedWorkloads}`)
+				g.Expect(statefulReplicas).To(Equal("2"))
+				g.Expect(replicaSetReplicas).To(Equal("2"))
+				g.Expect(daemonSelector).To(Equal("linux"))
+				g.Expect(daemonHibernateSelector).To(BeEmpty())
+				g.Expect(status).To(BeEmpty())
+			})
+		})
+
 		It("should honor ClusterHibernatePolicy annotation precedence", func() {
 			const testNamespace = "kube-greencosts-e2e-cluster"
 			createNamespace(testNamespace)
