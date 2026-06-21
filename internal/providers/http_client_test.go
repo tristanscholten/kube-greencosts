@@ -84,6 +84,16 @@ func TestRedactedURLHandlesEmptyInputs(t *testing.T) {
 	}
 }
 
+func TestReadLimitedBodyRejectsOversizedBody(t *testing.T) {
+	_, err := ReadLimitedBody(strings.NewReader("12345"), 4)
+	if err == nil {
+		t.Fatal("ReadLimitedBody() accepted oversized body")
+	}
+	if !strings.Contains(err.Error(), "exceeds 4 bytes") {
+		t.Fatalf("ReadLimitedBody() error = %q, want size limit", err)
+	}
+}
+
 func mustParseURL(t *testing.T, raw string) *url.URL {
 	t.Helper()
 	u, err := url.Parse(raw)
