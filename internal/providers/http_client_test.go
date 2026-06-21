@@ -84,8 +84,16 @@ func TestRedactedURLHandlesEmptyInputs(t *testing.T) {
 	}
 }
 
-func TestReadLimitedBodyRejectsOversizedBody(t *testing.T) {
-	_, err := ReadLimitedBody(strings.NewReader("12345"), 4)
+func TestReadLimitedBody(t *testing.T) {
+	body, err := ReadLimitedBody(strings.NewReader("1234"), 4)
+	if err != nil {
+		t.Fatalf("ReadLimitedBody() exact limit error = %v", err)
+	}
+	if string(body) != "1234" {
+		t.Fatalf("ReadLimitedBody() exact limit body = %q, want 1234", body)
+	}
+
+	_, err = ReadLimitedBody(strings.NewReader("12345"), 4)
 	if err == nil {
 		t.Fatal("ReadLimitedBody() accepted oversized body")
 	}
