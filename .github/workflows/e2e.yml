@@ -22,21 +22,27 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Set up kubectl
-        run: |
-          curl -fsSLo kubectl https://dl.k8s.io/release/v1.33.0/bin/linux/amd64/kubectl
-          sudo install -m 0755 kubectl /usr/local/bin/kubectl
-
       - name: Install Podman
         run: |
           sudo apt-get update
           sudo apt-get install -y podman
 
+      - name: Set up kubectl
+        run: |
+          K3S_VERSION="$(sudo podman run --rm docker.io/rancher/k3s:latest --version | awk 'NR == 1 { print $3 }')"
+          K8S_MINOR="${K3S_VERSION%%+*}"
+          K8S_MINOR="${K8S_MINOR%.*}"
+          KUBECTL_VERSION="$(curl -fsSL "https://dl.k8s.io/release/stable-${K8S_MINOR#v}.txt")"
+          echo "Using k3s ${K3S_VERSION} with kubectl ${KUBECTL_VERSION}"
+          curl -fsSLo kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          sudo install -m 0755 kubectl /usr/local/bin/kubectl
+          kubectl version --client=true
+
       - name: Create k3s cluster
         run: |
           sudo podman run --detach --name openclaw-k3s --privileged \
             --publish 127.0.0.1:6443:6443 \
-            docker.io/rancher/k3s:v1.33.0-k3s1 server \
+            docker.io/rancher/k3s:latest server \
             --disable traefik \
             --tls-san 127.0.0.1 \
             --write-kubeconfig-mode 644
