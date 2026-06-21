@@ -29,5 +29,6 @@ jobs:
 
       - name: Run e2e suite
         env:
+          CONTAINER_TOOL: docker
           E2E_IMAGE_LOADER: kind
         run: go test ./test/e2e -count=1 -timeout=15m
