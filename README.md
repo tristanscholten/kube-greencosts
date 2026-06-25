@@ -217,6 +217,7 @@ env:
 ## Prerequisites
 
 - Kubernetes ≥ 1.26
+- Go 1.26.4 or newer for local development
 - `kubectl` configured for your cluster
 - `make` and `podman` (or Docker via `CONTAINER_TOOL=docker`) for building
 - An [ENTSO-E security token](https://transparency.entsoe.eu/usrm/user/createPublicUser) **or** an [enever.nl API token](https://enever.nl/api)
@@ -665,9 +666,10 @@ default `make docker-build` tags the image as
 `docker.io/tristanscholten/kube-greencosts-controller:v<version>` and `latest`.
 Override `IMAGE_REPOSITORY`, `IMG` or `IMAGE_TAGS` when publishing elsewhere.
 
-GitHub Actions run linting, unit/envtest suites and container builds on pull
-requests. The scheduled/manual e2e workflow creates a local Kind cluster and
-runs `go test ./test/e2e -count=1 -timeout=15m`.
+GitHub Actions run linting, unit/envtest suites, govulncheck vulnerability
+scanning and container builds on pull requests. The scheduled/manual e2e
+workflow creates a local k3s cluster and runs
+`go test ./test/e2e -count=1 -timeout=15m`.
 
 The container workflow in [`.github/workflows/container.yml`](.github/workflows/container.yml)
 builds every pull request and pushes Docker Hub images on `main`, `v*.*.*` tags
