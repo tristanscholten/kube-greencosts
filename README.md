@@ -667,9 +667,16 @@ default `make docker-build` tags the image as
 Override `IMAGE_REPOSITORY`, `IMG` or `IMAGE_TAGS` when publishing elsewhere.
 
 GitHub Actions run linting, unit/envtest suites, govulncheck vulnerability
-scanning, container builds and image vulnerability scans on pull requests. The
-scheduled/manual e2e workflow creates a local k3s cluster and runs
-`go test ./test/e2e -count=1 -timeout=15m`.
+scanning, container builds, image vulnerability scans and local k3s e2e tests
+on pull requests. The e2e workflow is path-filtered to code, manifests, Docker
+and workflow changes, also runs nightly, and executes:
+
+```bash
+KUBECONFIG=<local-k3s-config> \
+  E2E_IMAGE_LOADER=k3s-container \
+  E2E_K3S_CONTAINER=openclaw-k3s \
+  go test ./test/e2e -count=1 -timeout=15m
+```
 
 The container workflow in [`.github/workflows/container.yml`](.github/workflows/container.yml)
 builds every pull request and pushes Docker Hub images on `main`, `v*.*.*` tags
