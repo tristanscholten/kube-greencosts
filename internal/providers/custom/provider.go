@@ -188,6 +188,12 @@ func convertIntervals(raw []apiPriceInterval) ([]greencostsv1alpha1.PricePoint, 
 
 func sortPricePoints(intervals []greencostsv1alpha1.PricePoint) {
 	slices.SortFunc(intervals, func(a, b greencostsv1alpha1.PricePoint) int {
-		return a.At.Time.Compare(b.At.Time)
+		if a.At.Before(&b.At) {
+			return -1
+		}
+		if b.At.Before(&a.At) {
+			return 1
+		}
+		return 0
 	})
 }

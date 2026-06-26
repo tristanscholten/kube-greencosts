@@ -8,9 +8,11 @@ import (
 	greencostsv1alpha1 "github.com/tristanscholten/kube-greencosts/api/v1alpha1"
 )
 
+const sampleDutchTimestamp = "2026-06-26T00:00:00+02:00"
+
 func TestConvertDataUsesSpotPriceAndConvertsToMWh(t *testing.T) {
 	got, err := New("token", "").convertData([]map[string]string{
-		{"datum": "2026-06-26T00:00:00+02:00", "prijs": "0.12345"},
+		{"datum": sampleDutchTimestamp, priceField: "0.12345"},
 	}, "vandaag")
 	if err != nil {
 		t.Fatalf("convertData() error = %v", err)
@@ -24,7 +26,7 @@ func TestConvertDataUsesSpotPriceAndConvertsToMWh(t *testing.T) {
 
 func TestConvertDataUsesSupplierPrice(t *testing.T) {
 	got, err := New("token", "anwb").convertData([]map[string]string{
-		{"datum": "2026-06-26T00:15:00+02:00", "prijs": "0.10", "prijsANWB": "0.22"},
+		{"datum": "2026-06-26T00:15:00+02:00", priceField: "0.10", "prijsANWB": "0.22"},
 	}, "vandaag")
 	if err != nil {
 		t.Fatalf("convertData() error = %v", err)
@@ -42,22 +44,22 @@ func TestConvertDataReportsMalformedItems(t *testing.T) {
 	}{
 		{
 			name: "missing datum",
-			data: []map[string]string{{"prijs": "0.1"}},
+			data: []map[string]string{{priceField: "0.1"}},
 			want: "missing datum field",
 		},
 		{
 			name: "bad datum",
-			data: []map[string]string{{"datum": "not-time", "prijs": "0.1"}},
+			data: []map[string]string{{"datum": "not-time", priceField: "0.1"}},
 			want: "parsing datum",
 		},
 		{
 			name: "missing price",
-			data: []map[string]string{{"datum": "2026-06-26T00:00:00+02:00"}},
+			data: []map[string]string{{"datum": sampleDutchTimestamp}},
 			want: `price key "prijs" not found`,
 		},
 		{
 			name: "bad price",
-			data: []map[string]string{{"datum": "2026-06-26T00:00:00+02:00", "prijs": "NaN nope"}},
+			data: []map[string]string{{"datum": sampleDutchTimestamp, priceField: "NaN nope"}},
 			want: "parsing price",
 		},
 	}
