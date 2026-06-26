@@ -668,8 +668,10 @@ Override `IMAGE_REPOSITORY`, `IMG` or `IMAGE_TAGS` when publishing elsewhere.
 
 GitHub Actions run linting, unit/envtest suites, govulncheck vulnerability
 scanning, container builds, image vulnerability scans and local k3s e2e tests
-on pull requests. The e2e workflow is path-filtered to code, manifests, Docker
-and workflow changes, also runs nightly, and executes:
+on pull requests. Required branch-protection checks run on every pull request
+so GitHub never waits for skipped required statuses. The e2e workflow is
+path-filtered to code, manifests, Docker and workflow changes, also runs
+nightly, and executes:
 
 ```bash
 KUBECONFIG=<local-k3s-config> \
