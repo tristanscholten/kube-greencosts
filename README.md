@@ -667,16 +667,18 @@ default `make docker-build` tags the image as
 Override `IMAGE_REPOSITORY`, `IMG` or `IMAGE_TAGS` when publishing elsewhere.
 
 GitHub Actions run linting, unit/envtest suites, govulncheck vulnerability
-scanning and container builds on pull requests. The scheduled/manual e2e
-workflow creates a local k3s cluster and runs
+scanning, container builds and image vulnerability scans on pull requests. The
+scheduled/manual e2e workflow creates a local k3s cluster and runs
 `go test ./test/e2e -count=1 -timeout=15m`.
 
 The container workflow in [`.github/workflows/container.yml`](.github/workflows/container.yml)
 builds every pull request and pushes Docker Hub images on `main`, `v*.*.*` tags
 and manual dispatches. Pull request and `main` builds calculate the image tag
 with `gandarez/semver-action`, using `VERSION` as the base version; release tag
-builds validate that the Git tag matches `VERSION`. The workflow expects
-repository secrets named `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`.
+builds validate that the Git tag matches `VERSION`. Every build is scanned with
+Trivy and fails on unfixed high or critical OS/library vulnerabilities. Pushed
+images also include BuildKit SBOM and provenance attestations. The workflow
+expects repository secrets named `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`.
 
 ---
 
