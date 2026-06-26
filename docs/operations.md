@@ -17,7 +17,7 @@ common failure modes for kube-greencosts.
 - Run local or CI e2e before promotion:
 
 ```bash
-KUBECONFIG=/home/tscholten/.openclaw/local-k3s-root/kubeconfig.yaml \
+KUBECONFIG=~/.openclaw/local-k3s-root/kubeconfig.yaml \
   E2E_IMAGE_LOADER=k3s-container \
   E2E_K3S_CONTAINER=openclaw-k3s \
   go test ./test/e2e -count=1 -timeout=15m
