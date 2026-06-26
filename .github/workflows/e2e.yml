@@ -1,6 +1,16 @@
 name: E2E Tests
 
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "**/*.go"
+      - "config/**"
+      - "Dockerfile"
+      - "Makefile"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/e2e.yml"
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
