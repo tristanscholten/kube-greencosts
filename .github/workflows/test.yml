@@ -3,20 +3,8 @@ name: Go Tests
 on:
   pull_request:
     branches: [main]
-    paths:
-      - "**/*.go"
-      - "config/crd/**"
-      - ".github/workflows/test.yml"
-      - "go.mod"
-      - "go.sum"
   push:
     branches: [main]
-    paths:
-      - "**/*.go"
-      - "config/crd/**"
-      - ".github/workflows/test.yml"
-      - "go.mod"
-      - "go.sum"
   workflow_dispatch:
 
 jobs:
