@@ -53,6 +53,7 @@ const (
 	ProviderName = "enever"
 
 	baseURL        = "https://enever.nl/apiv3"
+	priceField     = "prijs"
 	requestTimeout = 30 * time.Second
 	maxBodyBytes   = 1 << 20 // 1 MiB
 )
@@ -203,9 +204,9 @@ func (p *Provider) fetchDay(ctx context.Context, day string) (pts []greencostsv1
 
 // convertData converts the raw data slice to PricePoints.
 func (p *Provider) convertData(data []map[string]string, day string) ([]greencostsv1alpha1.PricePoint, error) {
-	priceKey := "prijs"
+	priceKey := priceField
 	if p.supplier != "" {
-		priceKey = "prijs" + p.supplier
+		priceKey = priceField + p.supplier
 	}
 
 	intervals := make([]greencostsv1alpha1.PricePoint, 0, len(data))
