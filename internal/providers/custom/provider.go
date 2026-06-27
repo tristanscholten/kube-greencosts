@@ -38,6 +38,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -181,5 +182,18 @@ func convertIntervals(raw []apiPriceInterval) ([]greencostsv1alpha1.PricePoint, 
 		})
 	}
 
+	sortPricePointsByStartTime(intervals)
 	return intervals, nil
+}
+
+func sortPricePointsByStartTime(intervals []greencostsv1alpha1.PricePoint) {
+	slices.SortFunc(intervals, func(a, b greencostsv1alpha1.PricePoint) int {
+		if a.At.Before(&b.At) {
+			return -1
+		}
+		if b.At.Before(&a.At) {
+			return 1
+		}
+		return 0
+	})
 }
