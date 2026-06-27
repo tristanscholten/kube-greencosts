@@ -12,7 +12,7 @@ import (
 	"github.com/tristanscholten/kube-greencosts/internal/providers"
 )
 
-func TestFetchPricesSendsContextAndSortsResponse(t *testing.T) {
+func TestFetchPricesSendsContextAndSortsResponseByStartTime(t *testing.T) {
 	const token = "test-token"
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -27,8 +27,8 @@ func TestFetchPricesSendsContextAndSortsResponse(t *testing.T) {
 		}
 
 		_ = json.NewEncoder(w).Encode([]apiPriceInterval{
-			{Start: "2026-06-26T02:00:00Z", EurPerMWh: 30},
-			{Start: "2026-06-26T00:00:00Z", EurPerMWh: 10},
+			{Start: "2026-06-26T02:00:00Z", EurPerMWh: 10},
+			{Start: "2026-06-26T00:00:00Z", EurPerMWh: 30},
 		})
 	}))
 	defer server.Close()
@@ -43,8 +43,18 @@ func TestFetchPricesSendsContextAndSortsResponse(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("FetchPrices() returned %d points, want 2", len(got))
 	}
-	if got[0].EurPerMWh != 10 || got[1].EurPerMWh != 30 {
-		t.Fatalf("FetchPrices() prices = %v then %v, want chronological order", got[0].EurPerMWh, got[1].EurPerMWh)
+
+	wantStarts := []time.Time{
+		time.Date(2026, 6, 26, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 6, 26, 2, 0, 0, 0, time.UTC),
+	}
+	for i, want := range wantStarts {
+		if !got[i].At.Time.Equal(want) {
+			t.Fatalf("FetchPrices()[%d].At = %s, want %s", i, got[i].At.Time, want)
+		}
+	}
+	if got[0].EurPerMWh != 30 || got[1].EurPerMWh != 10 {
+		t.Fatalf("FetchPrices() prices = %v then %v, want prices attached to chronological timestamps", got[0].EurPerMWh, got[1].EurPerMWh)
 	}
 }
 
