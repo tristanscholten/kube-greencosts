@@ -10,6 +10,7 @@
 [![Kubernetes](https://img.shields.io/badge/kubernetes-1.33-326CE5?logo=kubernetes&logoColor=white)](https://kubernetes.io)
 [![Operator SDK](https://img.shields.io/badge/operator--sdk-v1.42-EE0000?logo=redhat&logoColor=white)](https://sdk.operatorframework.io)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/tristanscholten/kube-greencosts/badge)](https://scorecard.dev/viewer/?uri=github.com/tristanscholten/kube-greencosts)
 [![CRDs](https://img.shields.io/badge/CRDs-3-blueviolet)](#crds)
 
 </div>
