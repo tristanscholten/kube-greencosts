@@ -67,6 +67,45 @@ kubectl get energypricesources,energyawarecronjobs,hibernatepolicies -A
 kubectl get clusterhibernatepolicies
 ```
 
+## Release Checklist
+
+Use one PR for the release prep so reviewers can see the exact version and
+notes before any tag is pushed.
+
+1. Pick the SemVer bump from user-facing changes since the previous release:
+   - `make bump-patch` for fixes and docs-only operational updates.
+   - `make bump-minor` for new providers, CRD fields or non-breaking behavior.
+   - `make bump-major` only for incompatible CRD or behavior changes.
+2. Move entries from `CHANGELOG.md` `Unreleased` into a dated release section.
+3. Run the release gate locally:
+
+   ```bash
+   make setup-envtest
+   make fmt
+   make vet
+   make test-unit
+   go run golang.org/x/vuln/cmd/govulncheck@v1.4.0 ./...
+   KUBECONFIG=~/.openclaw/local-k3s-root/kubeconfig.yaml \
+     E2E_IMAGE_LOADER=k3s-container \
+     E2E_K3S_CONTAINER=openclaw-k3s \
+     go test ./test/e2e -count=1 -timeout=15m
+   ```
+
+4. Merge the release PR after CI is green.
+5. Tag the merge commit with `v$(cat VERSION)` and push the tag:
+
+   ```bash
+   version="$(tr -d '[:space:]' < VERSION)"
+   git tag -a "v${version}" -m "kube-greencosts v${version}"
+   git push origin "v${version}"
+   ```
+
+6. Confirm the container workflow published
+   `docker.io/tristanscholten/kube-greencosts-controller:v${version}` and that
+   the tag build used the same `VERSION` value.
+7. Create GitHub release notes from the matching `CHANGELOG.md` section.
+8. Smoke-test upgrade in a non-production cluster with the exact image tag.
+
 ## Rollback
 
 If only the controller image changed, roll back to the previous image:

@@ -689,8 +689,9 @@ Trivy and fails on unfixed high or critical OS/library vulnerabilities. Pushed
 images also include BuildKit SBOM and provenance attestations. The workflow
 expects repository secrets named `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`.
 
-For production installation, upgrade, rollback, alerting and failure-mode
-guidance, see the [operations runbook](docs/operations.md).
+For production installation, release, upgrade, rollback, alerting and
+failure-mode guidance, see the [operations runbook](docs/operations.md). Release
+notes are tracked in [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
