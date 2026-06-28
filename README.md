@@ -89,6 +89,12 @@ Key metrics:
 | `controller_runtime_reconcile_total` | Total reconcile calls per controller, labelled by `controller` and `result` |
 | `controller_runtime_reconcile_errors_total` | Error count per controller |
 | `controller_runtime_reconcile_time_seconds` | Reconcile latency histogram |
+| `kube_greencosts_energy_price_source_info` | Configured `EnergyPriceSource` objects, labelled only by `namespace`, `name`, `provider`, and `bidding_zone` |
+| `kube_greencosts_energy_price_source_price_points` | Number of fetched price points currently stored on each `EnergyPriceSource` status |
+| `kube_greencosts_energy_price_source_current_price_eur_per_mwh` | Current active price for each source in EUR/MWh, when status contains an interval at scrape time |
+| `kube_greencosts_energy_price_source_last_updated_timestamp_seconds` | Unix timestamp of the most recent successful price refresh for each source |
+
+Energy source metrics intentionally do **not** expose provider tokens, Secret names/keys, custom provider URLs, or other unstable request data as labels.
 
 ### Distributed tracing
 
