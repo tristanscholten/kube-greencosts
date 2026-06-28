@@ -21,7 +21,7 @@ var _ = Describe("CRD validation", func() {
 				Namespace:    testDefaultNamespace,
 			},
 			Spec: greencostsv1alpha1.EnergyPriceSourceSpec{
-				Provider:    "entsoe",
+				Provider:    providerEntsoe,
 				BiddingZone: "NL",
 				CacheTTL:    metav1.Duration{Duration: time.Hour},
 				Providers: greencostsv1alpha1.ProviderConfig{

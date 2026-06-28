@@ -45,6 +45,10 @@ const (
 	conditionTypeReady   = "Ready"
 	conditionReasonReady = "PricesFetched"
 	conditionReasonError = "FetchFailed"
+
+	providerCustomProvider = "customProvider"
+	providerEntsoe         = "entsoe"
+	providerEnever         = "enever"
 )
 
 // EnergyPriceSourceReconciler reconciles a EnergyPriceSource object.
@@ -178,18 +182,18 @@ func (r *EnergyPriceSourceReconciler) Reconcile(ctx context.Context, req ctrl.Re
 // without an authSecretRef).
 func (r *EnergyPriceSourceReconciler) resolveToken(ctx context.Context, eps *greencostsv1alpha1.EnergyPriceSource) (string, error) {
 	switch eps.Spec.Provider {
-	case "customProvider":
+	case providerCustomProvider:
 		cfg := eps.Spec.Providers.CustomProviderConfig
 		if cfg == nil || cfg.SecretRef == nil {
 			return "", nil
 		}
 		return r.readSecretKey(ctx, eps.Namespace, *cfg.SecretRef)
-	case "entsoe":
+	case providerEntsoe:
 		if eps.Spec.Providers.EntsoeConfig == nil {
 			return "", fmt.Errorf("entsoeConfig is required for provider \"entsoe\"")
 		}
 		return r.readSecretKey(ctx, eps.Namespace, eps.Spec.Providers.EntsoeConfig.SecretRef)
-	case "enever":
+	case providerEnever:
 		if eps.Spec.Providers.EneverConfig == nil {
 			return "", fmt.Errorf("eneverConfig is required for provider \"enever\"")
 		}
