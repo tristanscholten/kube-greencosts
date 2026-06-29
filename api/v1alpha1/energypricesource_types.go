@@ -79,9 +79,10 @@ type ProviderConfig struct {
 // +kubebuilder:validation:XValidation:rule="self.provider == 'entsoe' ? (has(self.providers) && has(self.providers.entsoeConfig) && !has(self.providers.eneverConfig) && !has(self.providers.customProviderConfig)) : true",message="provider entsoe requires exactly providers.entsoeConfig"
 // +kubebuilder:validation:XValidation:rule="self.provider == 'enever' ? (has(self.providers) && has(self.providers.eneverConfig) && !has(self.providers.entsoeConfig) && !has(self.providers.customProviderConfig)) : true",message="provider enever requires exactly providers.eneverConfig"
 // +kubebuilder:validation:XValidation:rule="self.provider == 'customProvider' ? (has(self.providers) && has(self.providers.customProviderConfig) && !has(self.providers.entsoeConfig) && !has(self.providers.eneverConfig)) : true",message="provider customProvider requires exactly providers.customProviderConfig"
+// +kubebuilder:validation:XValidation:rule="self.provider == 'energyzero' ? (!has(self.providers) || (!has(self.providers.entsoeConfig) && !has(self.providers.eneverConfig) && !has(self.providers.customProviderConfig))) : true",message="provider energyzero does not use providers config"
 type EnergyPriceSourceSpec struct {
 	// Provider identifies the energy data provider plugin.
-	// +kubebuilder:validation:Enum=entsoe;enever;customProvider
+	// +kubebuilder:validation:Enum=entsoe;enever;customProvider;energyzero
 	Provider string `json:"provider"`
 
 	// BiddingZone is the market bidding zone (e.g. "NL", "DE-LU").
@@ -101,7 +102,8 @@ type EnergyPriceSourceSpec struct {
 	CacheTTL metav1.Duration `json:"cacheTTL"`
 
 	// Providers groups the provider-specific configurations.
-	// Set exactly the sub-field that matches the value of Provider.
+	// Set exactly the sub-field that matches the value of Provider. Omit for
+	// public providers that do not require configuration, such as energyzero.
 	// +optional
 	Providers ProviderConfig `json:"providers,omitempty"`
 }

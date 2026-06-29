@@ -69,11 +69,13 @@ spec:
                 - entsoe
                 - enever
                 - customProvider
+                - energyzero
                 type: string
               providers:
                 description: |-
                   Providers groups the provider-specific configurations.
-                  Set exactly the sub-field that matches the value of Provider.
+                  Set exactly the sub-field that matches the value of Provider. Omit for
+                  public providers that do not require configuration, such as energyzero.
                 properties:
                   customProviderConfig:
                     description: |-
@@ -242,6 +244,10 @@ spec:
               rule: 'self.provider == ''customProvider'' ? (has(self.providers) &&
                 has(self.providers.customProviderConfig) && !has(self.providers.entsoeConfig)
                 && !has(self.providers.eneverConfig)) : true'
+            - message: provider energyzero does not use providers config
+              rule: 'self.provider == ''energyzero'' ? (!has(self.providers) || (!has(self.providers.entsoeConfig)
+                && !has(self.providers.eneverConfig) && !has(self.providers.customProviderConfig)))
+                : true'
           status:
             description: EnergyPriceSourceStatus defines the observed state of EnergyPriceSource.
             properties:
