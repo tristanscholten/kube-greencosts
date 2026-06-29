@@ -1,0 +1,13 @@
+apiVersion: greencosts.hstr.nl/v1alpha1
+kind: EnergyPriceSource
+metadata:
+  labels:
+    app.kubernetes.io/name: kube-greencosts
+    app.kubernetes.io/managed-by: kustomize
+  name: energypricesource-energyzero
+spec:
+  provider: energyzero
+  biddingZone: NL
+  refreshSchedule: "0 0,6,12,18 * * *"
+  # EnergyZero is a public no-token provider. Do not set spec.providers.
+  cacheTTL: 350m

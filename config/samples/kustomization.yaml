@@ -1,6 +1,7 @@
 ## Append samples of your project ##
 resources:
 - greencosts_v1alpha1_energypricesource_enever.yaml
+- greencosts_v1alpha1_energypricesource_energyzero.yaml
 - greencosts_v1alpha1_energypricesource_entsoe.yaml
 - greencosts_v1alpha1_energyawarecronjob.yaml
 - greencosts_v1alpha1_hibernatepolicy.yaml

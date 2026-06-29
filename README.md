@@ -19,7 +19,7 @@
 
 ## What it does
 
-kube-greencosts watches real-time electricity spot prices from [ENTSO-E](https://transparency.entsoe.eu) or [enever.nl](https://enever.nl) and uses them to make two decisions automatically:
+kube-greencosts watches real-time electricity spot prices from [ENTSO-E](https://transparency.entsoe.eu), [enever.nl](https://enever.nl), or the public [EnergyZero](https://www.energyzero.nl/) API and uses them to make two decisions automatically:
 
 1. **When to run batch jobs** — `EnergyAwareCronJob` acts as a drop-in replacement for a Kubernetes `CronJob`, but instead of firing at exactly the scheduled time it picks the cheapest energy price slot within a configurable window after each cron trigger.
 2. **When to hibernate idle namespaces** — `HibernatePolicy` scales idle workloads to zero replicas during off-hours, restoring them before your team's working hours begin.
@@ -34,7 +34,7 @@ No code changes needed. Add two YAML files to your cluster and start saving.
 |---|---|
 | 🔋 **Energy-aware scheduling** | Runs jobs at the cheapest slot within a configurable window |
 | 🌙 **Namespace hibernation** | Scales idle namespaces to zero based on CPU / network / ingress thresholds |
-| ⚡ **Live price data** | 48-hour price windows from ENTSO-E (24 EU zones) or enever.nl (NL retail tariffs) |
+| ⚡ **Live price data** | Price windows from ENTSO-E (24 EU zones), enever.nl (NL retail tariffs), or EnergyZero (NL quarter-hour spot prices) |
 | 🔌 **Custom providers** | Plug in any JSON price API via `customProvider` |
 | 📅 **Fallback scheduling** | Configurable time-of-day fallback when price data is unavailable |
 | 💰 **Negative prices** | Optionally bias toward hours when the grid pays *you* to consume |
@@ -59,7 +59,7 @@ No code changes needed. Add two YAML files to your cluster and start saving.
 │          │                                                  │
 │  ┌───────┴────────────────────────────────────┐            │
 │  │          Provider registry                 │            │
-│  │  entsoe │ enever │ customProvider          │            │
+│  │  entsoe │ enever │ energyzero │ customProvider │        │
 │  └───────┬────────────────────────────────────┘            │
 │          │                                                  │
 │  ┌───────▼────────────────────────────────────────────┐    │
@@ -70,8 +70,8 @@ No code changes needed. Add two YAML files to your cluster and start saving.
 │  └────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────┘
          │                 │                    │
-   ENTSO-E API        enever.nl API       metrics-server
-   (XML/REST)         (JSON/REST)         + Prometheus
+   ENTSO-E API   enever.nl API   EnergyZero API   metrics-server
+   (XML/REST)    (JSON/REST)     (JSON/REST)      + Prometheus
 ```
 
 ---
@@ -227,7 +227,7 @@ env:
 - Go 1.26.4 or newer for local development
 - `kubectl` configured for your cluster
 - `make` and `podman` (or Docker via `CONTAINER_TOOL=docker`) for building
-- An [ENTSO-E security token](https://transparency.entsoe.eu/usrm/user/createPublicUser) **or** an [enever.nl API token](https://enever.nl/api)
+- An [ENTSO-E security token](https://transparency.entsoe.eu/usrm/user/createPublicUser), an [enever.nl API token](https://enever.nl/api), or no token when using EnergyZero
 
 ---
 
@@ -246,7 +246,7 @@ make docker-build
 make deploy
 ```
 
-### 2 — Create an API token secret
+### 2 — Create an API token secret, if your provider needs one
 
 ```bash
 # enever.nl
@@ -260,10 +260,14 @@ kubectl create secret generic entsoe-token \
   -n my-namespace
 ```
 
+EnergyZero is public and does not need a Secret.
+
 ### 3 — Apply sample resources
 
 ```bash
 kubectl apply -f config/samples/greencosts_v1alpha1_energypricesource_enever.yaml
+# or, no token needed:
+kubectl apply -f config/samples/greencosts_v1alpha1_energypricesource_energyzero.yaml
 kubectl apply -f config/samples/greencosts_v1alpha1_energyawarecronjob.yaml
 ```
 
@@ -293,7 +297,7 @@ kind: EnergyPriceSource
 metadata:
   name: my-prices
 spec:
-  provider: enever           # entsoe | enever | customProvider
+  provider: enever           # entsoe | enever | energyzero | customProvider
   biddingZone: NL            # market zone code
   cacheTTL: 350m             # how long fetched prices stay valid
   # refreshSchedule defaults to every 6 hours — override if needed:
@@ -308,13 +312,15 @@ spec:
 
 | Field | Required | Description |
 |---|---|---|
-| `provider` | ✅ | `entsoe`, `enever`, or `customProvider` |
+| `provider` | ✅ | `entsoe`, `enever`, `energyzero`, or `customProvider` |
 | `biddingZone` | ✅ | Market zone (e.g. `NL`, `DE-LU`, `FR`) |
 | `cacheTTL` | ✅ | Duration string — keep below `refreshSchedule` interval |
 | `refreshSchedule` | | Cron expression. Default: `0 0,6,12,18 * * *` |
 | `providers.eneverConfig` | | Required when `provider: enever` |
 | `providers.entsoeConfig` | | Required when `provider: entsoe` |
 | `providers.customProviderConfig` | | Required when `provider: customProvider` |
+
+For `provider: energyzero`, omit `providers`; EnergyZero uses a public no-token endpoint.
 
 **Status fields** — `EnergyPriceSource`
 
@@ -537,11 +543,27 @@ generated Job.
 `EnergyPriceSource` validates that `spec.providers` contains exactly the
 configuration block matching `spec.provider`. For example, `provider: entsoe`
 requires `providers.entsoeConfig` and rejects `eneverConfig` or
-`customProviderConfig` on the same resource.
+`customProviderConfig` on the same resource. `provider: energyzero` is public
+and rejects provider config blocks.
 
 Provider HTTP telemetry redacts secret query parameters before adding URL
 attributes to spans. This protects enever `token` and ENTSO-E `securityToken`
 values while still sending the original token to the upstream provider.
+
+### EnergyZero
+
+Provides public Dutch electricity spot prices at quarter-hour resolution. The
+provider requests EnergyZero's `INTERVAL_QUARTER` electricity series and uses
+the raw `base` price, converted from EUR/kWh to EUR/MWh. No Secret is needed.
+
+```yaml
+spec:
+  provider: energyzero
+  biddingZone: NL
+  cacheTTL: 350m
+```
+
+EnergyZero currently supports `biddingZone: NL` only.
 
 ### enever.nl
 

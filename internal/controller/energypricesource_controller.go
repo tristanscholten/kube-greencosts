@@ -49,6 +49,7 @@ const (
 	providerCustomProvider = "customProvider"
 	providerEntsoe         = "entsoe"
 	providerEnever         = "enever"
+	providerEnergyZero     = "energyzero"
 )
 
 // EnergyPriceSourceReconciler reconciles a EnergyPriceSource object.
@@ -179,7 +180,7 @@ func (r *EnergyPriceSourceReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 // resolveToken reads the provider-specific token from the referenced Secret.
 // Returns an empty string when no authentication is configured (customProvider
-// without an authSecretRef).
+// without an authSecretRef, or public providers such as energyzero).
 func (r *EnergyPriceSourceReconciler) resolveToken(ctx context.Context, eps *greencostsv1alpha1.EnergyPriceSource) (string, error) {
 	switch eps.Spec.Provider {
 	case providerCustomProvider:
@@ -198,6 +199,8 @@ func (r *EnergyPriceSourceReconciler) resolveToken(ctx context.Context, eps *gre
 			return "", fmt.Errorf("eneverConfig is required for provider \"enever\"")
 		}
 		return r.readSecretKey(ctx, eps.Namespace, eps.Spec.Providers.EneverConfig.SecretRef)
+	case providerEnergyZero:
+		return "", nil
 	default:
 		return "", nil
 	}

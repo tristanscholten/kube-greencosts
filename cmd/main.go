@@ -44,6 +44,7 @@ import (
 	"github.com/tristanscholten/kube-greencosts/internal/controller"
 	"github.com/tristanscholten/kube-greencosts/internal/providers"
 	"github.com/tristanscholten/kube-greencosts/internal/providers/custom"
+	"github.com/tristanscholten/kube-greencosts/internal/providers/energyzero"
 	"github.com/tristanscholten/kube-greencosts/internal/providers/enever"
 	"github.com/tristanscholten/kube-greencosts/internal/providers/entsoe"
 	"github.com/tristanscholten/kube-greencosts/internal/telemetry"
@@ -233,6 +234,7 @@ func main() {
 	providerRegistry.Register(custom.ProviderName, custom.Factory())
 	providerRegistry.Register(entsoe.ProviderName, entsoe.Factory())
 	providerRegistry.Register(enever.ProviderName, enever.Factory())
+	providerRegistry.Register(energyzero.ProviderName, energyzero.Factory())
 
 	// ── Register controllers ───────────────────────────────────────────────────
 	if err := (&controller.EnergyPriceSourceReconciler{

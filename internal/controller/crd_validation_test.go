@@ -13,6 +13,47 @@ import (
 )
 
 var _ = Describe("CRD validation", func() {
+	It("accepts EnergyZero without provider config", func() {
+		ctx := context.Background()
+		eps := &greencostsv1alpha1.EnergyPriceSource{
+			ObjectMeta: metav1.ObjectMeta{
+				GenerateName: "energyzero-",
+				Namespace:    testDefaultNamespace,
+			},
+			Spec: greencostsv1alpha1.EnergyPriceSourceSpec{
+				Provider:    providerEnergyZero,
+				BiddingZone: "NL",
+				CacheTTL:    metav1.Duration{Duration: time.Hour},
+			},
+		}
+
+		Expect(k8sClient.Create(ctx, eps)).To(Succeed())
+	})
+
+	It("rejects EnergyZero provider config", func() {
+		ctx := context.Background()
+		eps := &greencostsv1alpha1.EnergyPriceSource{
+			ObjectMeta: metav1.ObjectMeta{
+				GenerateName: "invalid-energyzero-",
+				Namespace:    testDefaultNamespace,
+			},
+			Spec: greencostsv1alpha1.EnergyPriceSourceSpec{
+				Provider:    providerEnergyZero,
+				BiddingZone: "NL",
+				CacheTTL:    metav1.Duration{Duration: time.Hour},
+				Providers: greencostsv1alpha1.ProviderConfig{
+					CustomProviderConfig: &greencostsv1alpha1.CustomProviderConfig{
+						URL: "https://example.test/prices",
+					},
+				},
+			},
+		}
+
+		Expect(k8sClient.Create(ctx, eps)).To(MatchError(ContainSubstring(
+			"provider energyzero does not use providers config",
+		)))
+	})
+
 	It("rejects EnergyPriceSource provider configs that do not match spec.provider", func() {
 		ctx := context.Background()
 		eps := &greencostsv1alpha1.EnergyPriceSource{
