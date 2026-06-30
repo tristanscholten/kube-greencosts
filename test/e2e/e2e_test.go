@@ -325,7 +325,7 @@ spec:
 			metricsOutput := scrapeMetrics("curl-eps-metrics")
 			Expect(metricsOutput).To(ContainSubstring("kube_greencosts_energy_price_source_info"))
 			Expect(metricsOutput).To(ContainSubstring("kube_greencosts_energy_price_source_price_points"))
-			Expect(metricsOutput).To(ContainSubstring("kube_greencosts_energy_price_source_current_price_eur_per_mwh"))
+			Expect(metricsOutput).To(ContainSubstring("kube_greencosts_energy_price_source_last_updated_timestamp_seconds"))
 			Expect(metricsOutput).To(ContainSubstring(`namespace="kube-greencosts-e2e-prices"`))
 			Expect(metricsOutput).To(ContainSubstring(`name="custom-prices"`))
 			Expect(metricsOutput).To(ContainSubstring(`provider="customProvider"`))
