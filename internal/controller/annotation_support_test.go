@@ -135,7 +135,7 @@ func TestSelectPricePoint(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := selectPricePoint(prices, tt.strategy)
+			got, err := selectPricePoint(prices, tt.strategy, 0, base.Add(3*time.Hour))
 			if err != nil {
 				t.Fatalf("selectPricePoint() error = %v", err)
 			}
@@ -143,6 +143,38 @@ func TestSelectPricePoint(t *testing.T) {
 				t.Fatalf("selected price = %v, want %v", got.EurPerMWh, tt.wantPrice)
 			}
 		})
+	}
+}
+
+func TestSelectPricePointScoresEstimatedDuration(t *testing.T) {
+	base := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
+	prices := []greencostsv1alpha1.PricePoint{
+		{At: metav1.NewTime(base), EurPerMWh: 100},
+		{At: metav1.NewTime(base.Add(15 * time.Minute)), EurPerMWh: 0},
+		{At: metav1.NewTime(base.Add(30 * time.Minute)), EurPerMWh: 45},
+		{At: metav1.NewTime(base.Add(45 * time.Minute)), EurPerMWh: 45},
+		{At: metav1.NewTime(base.Add(time.Hour)), EurPerMWh: 200},
+	}
+
+	got, err := selectPricePoint(prices, greencostsv1alpha1.LowestPrice, 30*time.Minute, base.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("selectPricePoint() error = %v", err)
+	}
+	if !got.At.Equal(&metav1.Time{Time: base.Add(15 * time.Minute)}) {
+		t.Fatalf("selected start = %s, want %s", got.At.Time, base.Add(15*time.Minute))
+	}
+}
+
+func TestSelectPricePointRequiresCompleteDurationInsideWindow(t *testing.T) {
+	base := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
+	prices := []greencostsv1alpha1.PricePoint{
+		{At: metav1.NewTime(base), EurPerMWh: 10},
+		{At: metav1.NewTime(base.Add(15 * time.Minute)), EurPerMWh: 20},
+	}
+
+	_, err := selectPricePoint(prices, greencostsv1alpha1.LowestPrice, 30*time.Minute, base.Add(30*time.Minute))
+	if err == nil || !strings.Contains(err.Error(), "no complete price interval") {
+		t.Fatalf("selectPricePoint() error = %v, want incomplete interval error", err)
 	}
 }
 
