@@ -381,7 +381,7 @@ spec:
 |---|---|---|
 | `energyPriceSource.name` | ✅ | Name of the `EnergyPriceSource` in the same namespace |
 | `energyStrategy.strategy` | ✅ | How to pick the slot. `LowestPrice` or `HighestPrice` |
-| `energyStrategy.estimatedDuration` | ✅ | Expected run time of the job (e.g. `2h`, `30m`) — used to find a slot that fits |
+| `energyStrategy.estimatedDuration` | ✅ | Expected run time of the job (e.g. `2h`, `30m`) — used to pick the cheapest/highest average-price slot that fits |
 | `energyStrategy.scheduleWindow` | ✅ | How long after the cron trigger the job may run (e.g. `6h`). Must be ≥ `estimatedDuration` |
 | `cronJob.schedule` | ✅ | Standard 5-field cron expression (e.g. `"0 22 * * *"`) |
 | `cronJob.timeZone` | | IANA timezone for the schedule (e.g. `Europe/Amsterdam`). Default: `UTC` |

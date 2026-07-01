@@ -204,7 +204,12 @@ func (r *EnergyAwareCronJobReconciler) Reconcile(ctx context.Context, req ctrl.R
 		return ctrl.Result{RequeueAfter: retryShort}, nil
 	}
 
-	selected, err := selectPricePoint(window, eacj.Spec.EnergyStrategy.Strategy)
+	selected, err := selectPricePoint(
+		window,
+		eacj.Spec.EnergyStrategy.Strategy,
+		eacj.Spec.EnergyStrategy.EstimatedDuration.Duration,
+		windowEnd,
+	)
 	if err != nil {
 		return r.failWith(ctx, base, &eacj, err)
 	}
@@ -471,6 +476,8 @@ func filterPricesInWindow(
 func selectPricePoint(
 	prices []greencostsv1alpha1.PricePoint,
 	strategy greencostsv1alpha1.Strategy,
+	estimatedDuration time.Duration,
+	windowEnd time.Time,
 ) (greencostsv1alpha1.PricePoint, error) {
 	if len(prices) == 0 {
 		return greencostsv1alpha1.PricePoint{}, fmt.Errorf("no prices available")
@@ -479,24 +486,85 @@ func selectPricePoint(
 	if strategy == "" {
 		strategy = greencostsv1alpha1.LowestPrice
 	}
+	if strategy != greencostsv1alpha1.LowestPrice && strategy != greencostsv1alpha1.HighestPrice {
+		return greencostsv1alpha1.PricePoint{}, fmt.Errorf("unsupported energyStrategy.strategy %q", strategy)
+	}
 
-	selected := prices[0]
-	for _, p := range prices[1:] {
+	selected := greencostsv1alpha1.PricePoint{}
+	selectedScore := 0.0
+	found := false
+	for i := range prices {
+		p := prices[i]
+		score, ok := pricePointScore(prices, i, estimatedDuration, windowEnd)
+		if !ok {
+			continue
+		}
+		if !found {
+			selected = p
+			selectedScore = score
+			found = true
+			continue
+		}
 		switch strategy {
 		case greencostsv1alpha1.LowestPrice:
-			if p.EurPerMWh < selected.EurPerMWh {
+			if score < selectedScore {
 				selected = p
+				selectedScore = score
 			}
 		case greencostsv1alpha1.HighestPrice:
-			if p.EurPerMWh > selected.EurPerMWh {
+			if score > selectedScore {
 				selected = p
+				selectedScore = score
 			}
-		default:
-			return greencostsv1alpha1.PricePoint{}, fmt.Errorf("unsupported energyStrategy.strategy %q", strategy)
 		}
+	}
+	if !found {
+		return greencostsv1alpha1.PricePoint{}, fmt.Errorf("no complete price interval fits estimatedDuration %s", estimatedDuration)
 	}
 
 	return selected, nil
+}
+
+func pricePointScore(
+	prices []greencostsv1alpha1.PricePoint,
+	startIndex int,
+	estimatedDuration time.Duration,
+	windowEnd time.Time,
+) (float64, bool) {
+	start := prices[startIndex].At.Time
+	if estimatedDuration <= 0 {
+		return prices[startIndex].EurPerMWh, !start.After(windowEnd)
+	}
+	end := start.Add(estimatedDuration)
+	if end.After(windowEnd) {
+		return 0, false
+	}
+
+	weighted := 0.0
+	covered := time.Duration(0)
+	for i := startIndex; i < len(prices) && covered < estimatedDuration; i++ {
+		intervalStart := prices[i].At.Time
+		if intervalStart.After(start.Add(covered)) {
+			return 0, false
+		}
+		if i+1 >= len(prices) {
+			return 0, false
+		}
+		intervalEnd := prices[i+1].At.Time
+		if intervalEnd.After(end) {
+			intervalEnd = end
+		}
+		span := intervalEnd.Sub(start.Add(covered))
+		if span <= 0 {
+			return 0, false
+		}
+		weighted += prices[i].EurPerMWh * float64(span)
+		covered += span
+	}
+	if covered != estimatedDuration {
+		return 0, false
+	}
+	return weighted / float64(estimatedDuration), true
 }
 
 // jobFinished reports whether a Job has reached a terminal state and which condition type it is.
