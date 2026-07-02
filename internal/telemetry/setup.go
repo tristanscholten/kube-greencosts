@@ -53,6 +53,11 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
+const (
+	samplerTraceIDRatio            = "traceidratio"
+	samplerParentBasedTraceIDRatio = "parentbased_traceidratio"
+)
+
 // Setup initialises the global OpenTelemetry TracerProvider when tracing is
 // enabled and returns a shutdown function that flushes and closes the exporter.
 //
@@ -122,13 +127,13 @@ func samplerFromEnv() sdktrace.Sampler {
 	switch name {
 	case "always_off":
 		return sdktrace.NeverSample()
-	case "traceidratio":
+	case samplerTraceIDRatio:
 		return sdktrace.TraceIDRatioBased(parseRatio(arg, 1.0))
 	case "parentbased_always_on":
 		return sdktrace.ParentBased(sdktrace.AlwaysSample())
 	case "parentbased_always_off":
 		return sdktrace.ParentBased(sdktrace.NeverSample())
-	case "parentbased_traceidratio":
+	case samplerParentBasedTraceIDRatio:
 		return sdktrace.ParentBased(sdktrace.TraceIDRatioBased(parseRatio(arg, 1.0)))
 	default: // "always_on" or unset
 		return sdktrace.AlwaysSample()
