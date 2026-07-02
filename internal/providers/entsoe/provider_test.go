@@ -8,6 +8,8 @@ import (
 	greencostsv1alpha1 "github.com/tristanscholten/kube-greencosts/api/v1alpha1"
 )
 
+const sampleToken = "token"
+
 func TestParsePublicationBuildsChronologicalPricePoints(t *testing.T) {
 	body := []byte(`<Publication_MarketDocument>
 		<TimeSeries>
@@ -62,6 +64,81 @@ func TestParseAcknowledgement(t *testing.T) {
 
 	if got := parseAcknowledgement([]byte(`<Publication_MarketDocument/>`)); got != "" {
 		t.Fatalf("parseAcknowledgement(non-error) = %q, want empty string", got)
+	}
+}
+
+func TestFactoryValidatesConfig(t *testing.T) {
+	tests := []struct {
+		name         string
+		spec         greencostsv1alpha1.EnergyPriceSourceSpec
+		token        string
+		wantAreaCode string
+		wantErr      string
+	}{
+		{
+			name:    "missing entsoe config",
+			wantErr: "entsoeConfig is required",
+		},
+		{
+			name: "unknown bidding zone without explicit area code",
+			spec: greencostsv1alpha1.EnergyPriceSourceSpec{
+				BiddingZone: "XX",
+				Providers:   greencostsv1alpha1.ProviderConfig{EntsoeConfig: &greencostsv1alpha1.EntsoeConfig{}},
+			},
+			token:   sampleToken,
+			wantErr: `no built-in ENTSO-E area code for biddingZone "XX"`,
+		},
+		{
+			name: "empty token",
+			spec: greencostsv1alpha1.EnergyPriceSourceSpec{
+				BiddingZone: "NL",
+				Providers:   greencostsv1alpha1.ProviderConfig{EntsoeConfig: &greencostsv1alpha1.EntsoeConfig{}},
+			},
+			wantErr: "security token is empty",
+		},
+		{
+			name: "built-in area code",
+			spec: greencostsv1alpha1.EnergyPriceSourceSpec{
+				BiddingZone: "NL",
+				Providers:   greencostsv1alpha1.ProviderConfig{EntsoeConfig: &greencostsv1alpha1.EntsoeConfig{}},
+			},
+			token:        sampleToken,
+			wantAreaCode: AreaCodes["NL"],
+		},
+		{
+			name: "explicit area code overrides zone lookup",
+			spec: greencostsv1alpha1.EnergyPriceSourceSpec{
+				BiddingZone: "XX",
+				Providers: greencostsv1alpha1.ProviderConfig{EntsoeConfig: &greencostsv1alpha1.EntsoeConfig{
+					AreaCode: "10YTEST-------X",
+				}},
+			},
+			token:        sampleToken,
+			wantAreaCode: "10YTEST-------X",
+		},
+	}
+
+	factory := Factory()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider, err := factory(tt.spec, tt.token)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("Factory() error = %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Factory() error = %v", err)
+			}
+			p, ok := provider.(*Provider)
+			if !ok {
+				t.Fatalf("Factory() provider = %T, want *Provider", provider)
+			}
+			if p.areaCode != tt.wantAreaCode {
+				t.Fatalf("Factory() areaCode = %q, want %q", p.areaCode, tt.wantAreaCode)
+			}
+		})
 	}
 }
 
