@@ -80,6 +80,65 @@ func TestConvertDataReportsMalformedItems(t *testing.T) {
 	}
 }
 
+func TestFactoryValidatesConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		spec    greencostsv1alpha1.EnergyPriceSourceSpec
+		token   string
+		wantErr string
+	}{
+		{
+			name:    "missing enever config",
+			wantErr: "eneverConfig is required",
+		},
+		{
+			name: "empty token",
+			spec: greencostsv1alpha1.EnergyPriceSourceSpec{
+				Providers: greencostsv1alpha1.ProviderConfig{EneverConfig: &greencostsv1alpha1.EneverConfig{}},
+			},
+			wantErr: "API token is empty",
+		},
+		{
+			name: "unknown supplier",
+			spec: greencostsv1alpha1.EnergyPriceSourceSpec{
+				Providers: greencostsv1alpha1.ProviderConfig{EneverConfig: &greencostsv1alpha1.EneverConfig{Supplier: "nope"}},
+			},
+			token:   "token",
+			wantErr: `unknown enever supplier "nope"`,
+		},
+		{
+			name: "valid supplier lowercased",
+			spec: greencostsv1alpha1.EnergyPriceSourceSpec{
+				Providers: greencostsv1alpha1.ProviderConfig{EneverConfig: &greencostsv1alpha1.EneverConfig{Supplier: "anwb"}},
+			},
+			token: "token",
+		},
+	}
+
+	factory := Factory()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			provider, err := factory(tt.spec, tt.token)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("Factory() error = %v, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Factory() error = %v", err)
+			}
+			p, ok := provider.(*Provider)
+			if !ok {
+				t.Fatalf("Factory() provider = %T, want *Provider", provider)
+			}
+			if p.supplier != "ANWB" {
+				t.Fatalf("Factory() supplier = %q, want ANWB", p.supplier)
+			}
+		})
+	}
+}
+
 func assertPricePoints(t *testing.T, got []greencostsv1alpha1.PricePoint, wantTimes []time.Time, wantPrices []float64) {
 	t.Helper()
 	if len(got) != len(wantTimes) {
