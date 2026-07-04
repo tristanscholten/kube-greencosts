@@ -187,7 +187,7 @@ func LoadImageForE2E(name string) error {
 func LoadImageToK3sContainerWithName(name string) error {
 	container := os.Getenv("E2E_K3S_CONTAINER")
 	if container == "" {
-		container = "openclaw-k3s"
+		container = "hermes-k3s"
 	}
 
 	cmd := exec.Command("bash", "-c",
