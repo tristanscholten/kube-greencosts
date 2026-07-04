@@ -1,11 +1,15 @@
 package enever
 
 import (
+	"context"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
 	greencostsv1alpha1 "github.com/tristanscholten/kube-greencosts/api/v1alpha1"
+	"github.com/tristanscholten/kube-greencosts/internal/providers"
 )
 
 const (
@@ -13,6 +17,72 @@ const (
 	sampleToken          = "token"
 	sampleDutchTimestamp = "2026-06-26T00:00:00+02:00"
 )
+
+func TestFetchPricesFetchesTodayAndTomorrow(t *testing.T) {
+	var gotPaths []string
+	p := New(sampleToken, "")
+	p.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		gotPaths = append(gotPaths, req.URL.Path)
+		if req.URL.Query().Get("token") != sampleToken {
+			t.Fatalf("token query = %q, want sample token", req.URL.Query().Get("token"))
+		}
+		if req.URL.Query().Get("resolution") != "15" {
+			t.Fatalf("resolution query = %q, want 15", req.URL.Query().Get("resolution"))
+		}
+
+		body := `{"status":"true","data":[{"datum":"2026-06-26T00:00:00+02:00","prijs":"0.10"}],"code":"ok"}`
+		if strings.Contains(req.URL.Path, "morgen") {
+			body = `{"status":"true","data":[{"datum":"2026-06-27T00:00:00+02:00","prijs":"0.20"}],"code":"ok"}`
+		}
+		return jsonResponse(http.StatusOK, body), nil
+	})}
+
+	got, err := p.FetchPrices(context.Background(), providers.FetchPricesRequest{})
+	if err != nil {
+		t.Fatalf("FetchPrices() error = %v", err)
+	}
+	if len(gotPaths) != 2 || !strings.Contains(gotPaths[0], "vandaag") || !strings.Contains(gotPaths[1], "morgen") {
+		t.Fatalf("requested paths = %v, want vandaag then morgen", gotPaths)
+	}
+	assertPricePoints(t, got,
+		[]time.Time{
+			time.Date(2026, 6, 26, 0, 0, 0, 0, time.FixedZone("", 2*60*60)),
+			time.Date(2026, 6, 27, 0, 0, 0, 0, time.FixedZone("", 2*60*60)),
+		},
+		[]float64{100, 200},
+	)
+}
+
+func TestFetchPricesContinuesWhenTomorrowUnavailable(t *testing.T) {
+	p := New(sampleToken, "")
+	p.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if strings.Contains(req.URL.Path, "morgen") {
+			return jsonResponse(http.StatusServiceUnavailable, `{"status":"false","code":"not_ready"}`), nil
+		}
+		return jsonResponse(http.StatusOK, `{"status":"true","data":[{"datum":"2026-06-26T00:00:00+02:00","prijs":"0.10"}],"code":"ok"}`), nil
+	})}
+
+	got, err := p.FetchPrices(context.Background(), providers.FetchPricesRequest{})
+	if err != nil {
+		t.Fatalf("FetchPrices() error = %v", err)
+	}
+	assertPricePoints(t, got,
+		[]time.Time{time.Date(2026, 6, 26, 0, 0, 0, 0, time.FixedZone("", 2*60*60))},
+		[]float64{100},
+	)
+}
+
+func TestFetchPricesFailsWhenTodayUnavailable(t *testing.T) {
+	p := New(sampleToken, "")
+	p.httpClient = &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusInternalServerError, `{"status":"false","code":"boom"}`), nil
+	})}
+
+	_, err := p.FetchPrices(context.Background(), providers.FetchPricesRequest{})
+	if err == nil || !strings.Contains(err.Error(), "fetching today's enever prices") {
+		t.Fatalf("FetchPrices() error = %v, want today's fetch context", err)
+	}
+}
 
 func TestConvertDataUsesSpotPriceAndConvertsToMWh(t *testing.T) {
 	got, err := New(sampleToken, "").convertData([]map[string]string{
@@ -152,5 +222,18 @@ func assertPricePoints(t *testing.T, got []greencostsv1alpha1.PricePoint, wantTi
 		if got[i].EurPerMWh != wantPrices[i] {
 			t.Fatalf("point %d price = %v, want %v", i, got[i].EurPerMWh, wantPrices[i])
 		}
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func jsonResponse(status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Body:       io.NopCloser(strings.NewReader(body)),
 	}
 }
