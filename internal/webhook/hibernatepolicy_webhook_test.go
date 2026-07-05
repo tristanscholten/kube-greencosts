@@ -14,6 +14,7 @@ import (
 
 const (
 	testWindowStart = "09:00"
+	testWindowEnd   = "17:00"
 	testTimezoneUTC = "UTC"
 )
 
@@ -28,7 +29,7 @@ func TestValidateAvailabilityWindows(t *testing.T) {
 			window: greencostsv1alpha1.AvailabilityWindow{
 				Weekdays: []greencostsv1alpha1.Weekday{greencostsv1alpha1.Monday},
 				From:     testWindowStart,
-				Until:    "17:00",
+				Until:    testWindowEnd,
 				Timezone: "Europe/Amsterdam",
 			},
 		},
@@ -37,7 +38,7 @@ func TestValidateAvailabilityWindows(t *testing.T) {
 			window: greencostsv1alpha1.AvailabilityWindow{
 				Weekdays: []greencostsv1alpha1.Weekday{greencostsv1alpha1.Monday},
 				From:     testWindowStart,
-				Until:    "17:00",
+				Until:    testWindowEnd,
 				Timezone: "Mars/Amsterdam",
 			},
 			wantErr: "timezone",
