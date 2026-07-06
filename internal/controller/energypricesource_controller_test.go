@@ -20,10 +20,11 @@ import (
 )
 
 const (
-	testCronEveryMinute = "* * * * *"
-	testSecretKey       = "token"
-	testSecretName      = "provider-token"
-	testSecretValue     = "secret-value"
+	testCronEveryMinute       = "* * * * *"
+	testEnergyPriceSourceName = "prices"
+	testSecretKey             = "token"
+	testSecretName            = "provider-token"
+	testSecretValue           = "secret-value"
 )
 
 func TestEnergyPriceSourceReconcileFetchesAndStoresPrices(t *testing.T) {
@@ -251,7 +252,7 @@ func TestEnergyPriceSourceResolveToken(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			eps := &greencostsv1alpha1.EnergyPriceSource{
-				ObjectMeta: metav1.ObjectMeta{Name: "prices", Namespace: testDefaultNamespace},
+				ObjectMeta: metav1.ObjectMeta{Name: testEnergyPriceSourceName, Namespace: testDefaultNamespace},
 				Spec:       tt.spec,
 			}
 
@@ -387,6 +388,9 @@ func TestSetCondition(t *testing.T) {
 	conditions = setCondition(conditions, metav1.Condition{Type: "Synced", Status: metav1.ConditionTrue})
 	if len(conditions) != 3 {
 		t.Fatalf("condition count after append = %d, want 3", len(conditions))
+	}
+	if synced := findCondition(conditions, "Synced"); synced == nil || synced.Status != metav1.ConditionTrue {
+		t.Fatalf("Synced condition = %#v, want true", synced)
 	}
 }
 

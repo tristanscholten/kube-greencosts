@@ -44,6 +44,8 @@ import (
 )
 
 const (
+	jobKind = "Job"
+
 	// ownerLabel is applied to every Job created by EnergyAwareCronJob so the
 	// controller can list its owned jobs without an indexer.
 	ownerLabel = "greencosts.hstr.nl/owner"
@@ -289,7 +291,7 @@ func (r *EnergyAwareCronJobReconciler) dispatchJob(
 
 	ref := corev1.ObjectReference{
 		APIVersion: "batch/v1",
-		Kind:       "Job",
+		Kind:       jobKind,
 		Namespace:  job.Namespace,
 		Name:       job.Name,
 		UID:        job.UID,
@@ -341,7 +343,7 @@ func (r *EnergyAwareCronJobReconciler) syncActiveJobs(
 		case !finished:
 			activeRefs = append(activeRefs, corev1.ObjectReference{
 				APIVersion: "batch/v1",
-				Kind:       "Job",
+				Kind:       jobKind,
 				Namespace:  job.Namespace,
 				Name:       job.Name,
 				UID:        job.UID,
