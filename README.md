@@ -678,12 +678,12 @@ make setup-envtest
 make test
 
 # Run e2e tests. By default this uses Kind when available, otherwise it imports
-# the image into the local k3s container named openclaw-k3s.
+# the image into the local k3s container named hermes-k3s.
 make test-e2e
 
 # Force a specific e2e image loader when needed.
 E2E_IMAGE_LOADER=kind make test-e2e
-E2E_IMAGE_LOADER=k3s-container E2E_K3S_CONTAINER=openclaw-k3s make test-e2e
+E2E_IMAGE_LOADER=k3s-container E2E_K3S_CONTAINER=hermes-k3s make test-e2e
 
 # Build and deploy to your current kubectl context
 make docker-build
@@ -705,7 +705,7 @@ nightly, and executes:
 ```bash
 KUBECONFIG=<local-k3s-config> \
   E2E_IMAGE_LOADER=k3s-container \
-  E2E_K3S_CONTAINER=openclaw-k3s \
+  E2E_K3S_CONTAINER=hermes-k3s \
   go test ./test/e2e -count=1 -timeout=15m
 ```
 
