@@ -72,7 +72,7 @@ func TestEnergyPriceSourceReconcileFetchesAndStoresPrices(t *testing.T) {
 	if len(got.Status.Prices) != 1 || got.Status.Prices[0].EurPerMWh != 12.5 {
 		t.Fatalf("stored prices = %#v, want one 12.5 price", got.Status.Prices)
 	}
-	condition := findReadyCondition(got.Status.Conditions)
+	condition := findCondition(got.Status.Conditions, conditionTypeReady)
 	if condition == nil || condition.Status != metav1.ConditionTrue || condition.Reason != conditionReasonReady {
 		t.Fatalf("Ready condition = %#v, want true %s", condition, conditionReasonReady)
 	}
@@ -163,7 +163,7 @@ func TestEnergyPriceSourceReconcileRecordsConfigErrors(t *testing.T) {
 			if err := c.Get(ctx, client.ObjectKeyFromObject(eps), &got); err != nil {
 				t.Fatalf("getting EnergyPriceSource: %v", err)
 			}
-			condition := findReadyCondition(got.Status.Conditions)
+			condition := findCondition(got.Status.Conditions, conditionTypeReady)
 			if condition == nil || condition.Status != metav1.ConditionFalse {
 				t.Fatalf("Ready condition = %#v, want false", condition)
 			}
@@ -354,7 +354,7 @@ func TestEnergyPriceSourceSetErrorCondition(t *testing.T) {
 	if err := c.Get(ctx, client.ObjectKeyFromObject(eps), &got); err != nil {
 		t.Fatalf("getting EnergyPriceSource: %v", err)
 	}
-	condition := findReadyCondition(got.Status.Conditions)
+	condition := findCondition(got.Status.Conditions, conditionTypeReady)
 	if condition == nil {
 		t.Fatal("Ready condition missing")
 	}
@@ -389,6 +389,9 @@ func TestSetCondition(t *testing.T) {
 	if len(conditions) != 3 {
 		t.Fatalf("condition count after append = %d, want 3", len(conditions))
 	}
+	if synced := findCondition(conditions, "Synced"); synced == nil || synced.Status != metav1.ConditionTrue {
+		t.Fatalf("Synced condition = %#v, want true", synced)
+	}
 }
 
 func newControllerTestScheme(t *testing.T) *runtime.Scheme {
@@ -414,9 +417,9 @@ type errForTest string
 
 func (e errForTest) Error() string { return string(e) }
 
-func findReadyCondition(conditions []metav1.Condition) *metav1.Condition {
+func findCondition(conditions []metav1.Condition, conditionType string) *metav1.Condition {
 	for i := range conditions {
-		if conditions[i].Type == conditionTypeReady {
+		if conditions[i].Type == conditionType {
 			return &conditions[i]
 		}
 	}

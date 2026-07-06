@@ -196,9 +196,41 @@ func TestDispatchJobReplacesActiveJobsAndUpdatesStatus(t *testing.T) {
 	if got.Status.LastScheduleTime == nil || !got.Status.LastScheduleTime.Time.Equal(scheduledAt) {
 		t.Fatalf("LastScheduleTime = %#v, want %s", got.Status.LastScheduleTime, scheduledAt)
 	}
-	condition := findReadyCondition(got.Status.Conditions)
+	condition := findCondition(got.Status.Conditions, conditionTypeReady)
 	if condition == nil || condition.Reason != "JobDispatched" {
 		t.Fatalf("Ready condition = %#v, want JobDispatched", condition)
+	}
+}
+
+func TestFailWithStoresReadyErrorCondition(t *testing.T) {
+	ctx := context.Background()
+	s := newEnergyAwareCronJobTestScheme(t)
+	eacj := energyAwareCronJobForController("nightly")
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithStatusSubresource(&greencostsv1alpha1.EnergyAwareCronJob{}).
+		WithObjects(eacj).
+		Build()
+	r := &EnergyAwareCronJobReconciler{Client: c, Scheme: s}
+
+	result, err := r.failWith(ctx, eacj.DeepCopy(), eacj, errForTest("price source missing"))
+	if err != nil {
+		t.Fatalf("failWith() error = %v", err)
+	}
+	if result.RequeueAfter != retryShort {
+		t.Fatalf("RequeueAfter = %s, want %s", result.RequeueAfter, retryShort)
+	}
+
+	var got greencostsv1alpha1.EnergyAwareCronJob
+	if err := c.Get(ctx, client.ObjectKeyFromObject(eacj), &got); err != nil {
+		t.Fatalf("getting EnergyAwareCronJob: %v", err)
+	}
+	condition := findCondition(got.Status.Conditions, conditionTypeReady)
+	if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != conditionReasonError {
+		t.Fatalf("Ready condition = %#v, want false %s", condition, conditionReasonError)
+	}
+	if condition.Message != "price source missing" {
+		t.Fatalf("Ready message = %q, want price source missing", condition.Message)
 	}
 }
 
