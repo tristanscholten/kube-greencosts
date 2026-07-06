@@ -20,10 +20,11 @@ import (
 )
 
 const (
-	testCronEveryMinute = "* * * * *"
-	testSecretKey       = "token"
-	testSecretName      = "provider-token"
-	testSecretValue     = "secret-value"
+	testCronEveryMinute       = "* * * * *"
+	testEnergyPriceSourceName = "prices"
+	testSecretKey             = "token"
+	testSecretName            = "provider-token"
+	testSecretValue           = "secret-value"
 )
 
 func TestEnergyPriceSourceReconcileFetchesAndStoresPrices(t *testing.T) {
@@ -71,7 +72,7 @@ func TestEnergyPriceSourceReconcileFetchesAndStoresPrices(t *testing.T) {
 	if len(got.Status.Prices) != 1 || got.Status.Prices[0].EurPerMWh != 12.5 {
 		t.Fatalf("stored prices = %#v, want one 12.5 price", got.Status.Prices)
 	}
-	condition := findCondition(got.Status.Conditions, conditionTypeReady)
+	condition := findReadyCondition(got.Status.Conditions)
 	if condition == nil || condition.Status != metav1.ConditionTrue || condition.Reason != conditionReasonReady {
 		t.Fatalf("Ready condition = %#v, want true %s", condition, conditionReasonReady)
 	}
@@ -162,7 +163,7 @@ func TestEnergyPriceSourceReconcileRecordsConfigErrors(t *testing.T) {
 			if err := c.Get(ctx, client.ObjectKeyFromObject(eps), &got); err != nil {
 				t.Fatalf("getting EnergyPriceSource: %v", err)
 			}
-			condition := findCondition(got.Status.Conditions, conditionTypeReady)
+			condition := findReadyCondition(got.Status.Conditions)
 			if condition == nil || condition.Status != metav1.ConditionFalse {
 				t.Fatalf("Ready condition = %#v, want false", condition)
 			}
@@ -251,7 +252,7 @@ func TestEnergyPriceSourceResolveToken(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			eps := &greencostsv1alpha1.EnergyPriceSource{
-				ObjectMeta: metav1.ObjectMeta{Name: "prices", Namespace: testDefaultNamespace},
+				ObjectMeta: metav1.ObjectMeta{Name: testEnergyPriceSourceName, Namespace: testDefaultNamespace},
 				Spec:       tt.spec,
 			}
 
@@ -353,7 +354,7 @@ func TestEnergyPriceSourceSetErrorCondition(t *testing.T) {
 	if err := c.Get(ctx, client.ObjectKeyFromObject(eps), &got); err != nil {
 		t.Fatalf("getting EnergyPriceSource: %v", err)
 	}
-	condition := findCondition(got.Status.Conditions, conditionTypeReady)
+	condition := findReadyCondition(got.Status.Conditions)
 	if condition == nil {
 		t.Fatal("Ready condition missing")
 	}
@@ -413,9 +414,9 @@ type errForTest string
 
 func (e errForTest) Error() string { return string(e) }
 
-func findCondition(conditions []metav1.Condition, conditionType string) *metav1.Condition {
+func findReadyCondition(conditions []metav1.Condition) *metav1.Condition {
 	for i := range conditions {
-		if conditions[i].Type == conditionType {
+		if conditions[i].Type == conditionTypeReady {
 			return &conditions[i]
 		}
 	}
