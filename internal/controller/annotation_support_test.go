@@ -22,8 +22,10 @@ import (
 )
 
 const (
+	testAppsV1              = "apps/v1"
 	testBusinessHoursPolicy = "business-hours"
 	testDefaultNamespace    = "default"
+	testOtherName           = "other"
 	testProdNamespace       = "prod"
 	testRunbookURL          = "https://example.com/runbook"
 	testStagingNamespace    = "staging"
@@ -202,7 +204,7 @@ func TestSuspendHPAZeroTargetDetachesAndRestoresScaleTarget(t *testing.T) {
 			MinReplicas: &minReplicas,
 			MaxReplicas: 5,
 			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
-				APIVersion: "apps/v1",
+				APIVersion: testAppsV1,
 				Kind:       workloadKindDeployment,
 				Name:       testWorkerName,
 			},
@@ -375,7 +377,7 @@ func TestClusterHibernatePolicyCollectsAnnotatedResources(t *testing.T) {
 					},
 					OwnerReferences: []metav1.OwnerReference{
 						{
-							APIVersion: "apps/v1",
+							APIVersion: testAppsV1,
 							Kind:       workloadKindDeployment,
 							Name:       "owner",
 						},

@@ -163,7 +163,7 @@ func TestHibernationAnnotations(t *testing.T) {
 	if !ownedBy(annotations, owner) {
 		t.Fatal("ownedBy() = false for matching owner")
 	}
-	if ownedBy(annotations, hibernationOwner{Kind: controllerTestHibernatePolicyKind, Namespace: testDefaultNamespace, Name: "other"}) {
+	if ownedBy(annotations, hibernationOwner{Kind: controllerTestHibernatePolicyKind, Namespace: testDefaultNamespace, Name: testOtherName}) {
 		t.Fatal("ownedBy() = true for different owner")
 	}
 
