@@ -14,6 +14,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
+const (
+	controllerTestClusterHibernatePolicyKind = "ClusterHibernatePolicy"
+	controllerTestDaemonSetName              = "agents"
+	controllerTestSpotNodePool               = "spot"
+	controllerTestSpotNodeSelectorJSON       = `{"nodepool":"spot"}`
+)
+
 func TestHibernatePolicyReconcilerHibernatesAndWakesReplicaWorkloads(t *testing.T) {
 	ctx := context.Background()
 	s := newControllerTestScheme(t)
@@ -79,7 +86,7 @@ func TestHibernatePolicyReconcilerHibernatesAndWakesDaemonSets(t *testing.T) {
 	ctx := context.Background()
 	s := newControllerTestScheme(t)
 	owner := hibernationOwner{Kind: controllerTestHibernatePolicyKind, Namespace: testDefaultNamespace, Name: testBusinessHoursPolicy}
-	ds := daemonSetForHibernateTest("agents", map[string]string{"nodepool": "spot"}, nil)
+	ds := daemonSetForHibernateTest(controllerTestDaemonSetName, map[string]string{"nodepool": controllerTestSpotNodePool})
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(ds).Build()
 	r := &HibernatePolicyReconciler{Client: c, Scheme: s}
 
@@ -92,13 +99,13 @@ func TestHibernatePolicyReconcilerHibernatesAndWakesDaemonSets(t *testing.T) {
 	}
 
 	var hibernated appsv1.DaemonSet
-	if err := c.Get(ctx, client.ObjectKey{Namespace: testDefaultNamespace, Name: "agents"}, &hibernated); err != nil {
+	if err := c.Get(ctx, client.ObjectKey{Namespace: testDefaultNamespace, Name: controllerTestDaemonSetName}, &hibernated); err != nil {
 		t.Fatalf("getting DaemonSet: %v", err)
 	}
 	if hibernated.Spec.Template.Spec.NodeSelector[hibernateNodeSelectorKey] != hibernateNodeSelectorValue {
 		t.Fatalf("nodeSelector = %#v, want hibernate selector", hibernated.Spec.Template.Spec.NodeSelector)
 	}
-	if hibernated.Annotations[annotationOriginalNodeSelector] != `{"nodepool":"spot"}` {
+	if hibernated.Annotations[annotationOriginalNodeSelector] != controllerTestSpotNodeSelectorJSON {
 		t.Fatalf("original nodeSelector annotation = %q", hibernated.Annotations[annotationOriginalNodeSelector])
 	}
 
@@ -106,10 +113,10 @@ func TestHibernatePolicyReconcilerHibernatesAndWakesDaemonSets(t *testing.T) {
 		t.Fatalf("wakeWorkloadType() error = %v", err)
 	}
 	var woke appsv1.DaemonSet
-	if err := c.Get(ctx, client.ObjectKey{Namespace: testDefaultNamespace, Name: "agents"}, &woke); err != nil {
+	if err := c.Get(ctx, client.ObjectKey{Namespace: testDefaultNamespace, Name: controllerTestDaemonSetName}, &woke); err != nil {
 		t.Fatalf("getting DaemonSet after wake: %v", err)
 	}
-	if woke.Spec.Template.Spec.NodeSelector["nodepool"] != "spot" || len(woke.Spec.Template.Spec.NodeSelector) != 1 {
+	if woke.Spec.Template.Spec.NodeSelector["nodepool"] != controllerTestSpotNodePool || len(woke.Spec.Template.Spec.NodeSelector) != 1 {
 		t.Fatalf("restored nodeSelector = %#v, want original", woke.Spec.Template.Spec.NodeSelector)
 	}
 	if woke.Annotations[annotationHibernated] != "" || woke.Annotations[annotationOriginalNodeSelector] != "" {
@@ -125,7 +132,7 @@ func TestHibernatePolicyReconcilerSkipsUnsafeNoops(t *testing.T) {
 	otherOwner := hibernationOwner{Kind: controllerTestHibernatePolicyKind, Namespace: testDefaultNamespace, Name: testOtherName}
 	deploy := deploymentForHibernateTest("owned-by-other", 5, map[string]string{})
 	markHibernated(deploy.Annotations, otherOwner)
-	ds := daemonSetForHibernateTest("agents", nil, nil)
+	ds := daemonSetForHibernateTest(controllerTestDaemonSetName, nil)
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(deploy, ds).Build()
 	r := &HibernatePolicyReconciler{Client: c, Scheme: s}
 
@@ -155,6 +162,142 @@ func TestHibernatePolicyReconcilerSkipsUnsafeNoops(t *testing.T) {
 	assertDeploymentReplicas(t, ctx, c, "owned-by-other", 5)
 }
 
+func TestClusterHibernatePolicyReconcilerHibernatesAndWakesReplicaWorkloads(t *testing.T) {
+	ctx := context.Background()
+	s := newControllerTestScheme(t)
+	max := int32(1)
+	owner := hibernationOwner{Kind: controllerTestClusterHibernatePolicyKind, Name: testBusinessHoursPolicy}
+	deploy := deploymentForHibernateTest("api", 6, nil)
+	stateful := statefulSetForHibernateTest("cache", 4, nil)
+	replica := replicaSetForHibernateTest("worker", 3, nil, nil)
+	hpa := hpaForHibernateTest("api-hpa", workloadKindDeployment, "api", 2, 8)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(deploy, stateful, replica, hpa).Build()
+	r := &ClusterHibernatePolicyReconciler{Client: c, Scheme: s}
+	action := greencostsv1alpha1.HibernateAction{MaxReplicas: &max}
+
+	tests := []struct {
+		name string
+		ref  workloadRef
+	}{
+		{name: "deployment", ref: workloadRef{Namespace: testDefaultNamespace, Kind: workloadKindDeployment, Name: "api"}},
+		{name: "statefulset", ref: workloadRef{Namespace: testDefaultNamespace, Kind: workloadKindStatefulSet, Name: "cache"}},
+		{name: "replicaset", ref: workloadRef{Namespace: testDefaultNamespace, Kind: workloadKindReplicaSet, Name: "worker"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := r.hibernateWorkload(ctx, tt.ref, action, owner)
+			if err != nil {
+				t.Fatalf("hibernateWorkload() error = %v", err)
+			}
+			if !got {
+				t.Fatalf("hibernateWorkload() = false, want true")
+			}
+		})
+	}
+
+	assertDeploymentReplicas(t, ctx, c, "api", max)
+	assertStatefulSetReplicas(t, ctx, c, "cache", max)
+	assertReplicaSetReplicas(t, ctx, c, "worker", max)
+	assertHibernatedAnnotation(t, ctx, c, &appsv1.Deployment{}, "api", owner)
+	assertHPAClamped(t, ctx, c, "api-hpa", max)
+
+	for _, tt := range tests {
+		if err := r.wakeWorkload(ctx, tt.ref, owner); err != nil {
+			t.Fatalf("wakeWorkload(%s) error = %v", tt.ref, err)
+		}
+	}
+
+	assertDeploymentReplicas(t, ctx, c, "api", 6)
+	assertStatefulSetReplicas(t, ctx, c, "cache", 4)
+	assertReplicaSetReplicas(t, ctx, c, "worker", 3)
+	assertNoHibernationAnnotation(t, ctx, c, &appsv1.Deployment{}, "api")
+	assertHPARestored(t, ctx, c, "api-hpa", 2, 8)
+}
+
+func TestClusterHibernatePolicyReconcilerHibernatesAndWakesDaemonSet(t *testing.T) {
+	ctx := context.Background()
+	s := newControllerTestScheme(t)
+	owner := hibernationOwner{Kind: controllerTestClusterHibernatePolicyKind, Name: testBusinessHoursPolicy}
+	ds := daemonSetForHibernateTest(controllerTestDaemonSetName, map[string]string{"nodepool": controllerTestSpotNodePool})
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(ds).Build()
+	r := &ClusterHibernatePolicyReconciler{Client: c, Scheme: s}
+	ref := workloadRef{Namespace: testDefaultNamespace, Kind: workloadKindDaemonSet, Name: controllerTestDaemonSetName}
+
+	got, err := r.hibernateWorkload(ctx, ref, greencostsv1alpha1.HibernateAction{SleepDaemonSet: true}, owner)
+	if err != nil {
+		t.Fatalf("hibernateWorkload() error = %v", err)
+	}
+	if !got {
+		t.Fatalf("hibernateWorkload() = false, want true")
+	}
+
+	var hibernated appsv1.DaemonSet
+	if err := c.Get(ctx, client.ObjectKey{Namespace: testDefaultNamespace, Name: controllerTestDaemonSetName}, &hibernated); err != nil {
+		t.Fatalf("getting DaemonSet: %v", err)
+	}
+	if hibernated.Spec.Template.Spec.NodeSelector[hibernateNodeSelectorKey] != hibernateNodeSelectorValue {
+		t.Fatalf("nodeSelector = %#v, want hibernate selector", hibernated.Spec.Template.Spec.NodeSelector)
+	}
+	if hibernated.Annotations[annotationOriginalNodeSelector] != controllerTestSpotNodeSelectorJSON {
+		t.Fatalf("original nodeSelector annotation = %q", hibernated.Annotations[annotationOriginalNodeSelector])
+	}
+
+	if err := r.wakeWorkload(ctx, ref, owner); err != nil {
+		t.Fatalf("wakeWorkload() error = %v", err)
+	}
+	var woke appsv1.DaemonSet
+	if err := c.Get(ctx, client.ObjectKey{Namespace: testDefaultNamespace, Name: controllerTestDaemonSetName}, &woke); err != nil {
+		t.Fatalf("getting DaemonSet after wake: %v", err)
+	}
+	if woke.Spec.Template.Spec.NodeSelector["nodepool"] != controllerTestSpotNodePool || len(woke.Spec.Template.Spec.NodeSelector) != 1 {
+		t.Fatalf("restored nodeSelector = %#v, want original", woke.Spec.Template.Spec.NodeSelector)
+	}
+	if woke.Annotations[annotationHibernated] != "" || woke.Annotations[annotationOriginalNodeSelector] != "" {
+		t.Fatalf("wake left hibernation annotations: %#v", woke.Annotations)
+	}
+}
+
+func TestClusterHibernatePolicyReconcilerSkipsUnsafeNoops(t *testing.T) {
+	ctx := context.Background()
+	s := newControllerTestScheme(t)
+	max := int32(1)
+	owner := hibernationOwner{Kind: controllerTestClusterHibernatePolicyKind, Name: testBusinessHoursPolicy}
+	otherOwner := hibernationOwner{Kind: controllerTestClusterHibernatePolicyKind, Name: testOtherName}
+	deploy := deploymentForHibernateTest("owned-by-other", 5, map[string]string{})
+	markHibernated(deploy.Annotations, otherOwner)
+	ds := daemonSetForHibernateTest("no-daemon-action", nil)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(deploy, ds).Build()
+	r := &ClusterHibernatePolicyReconciler{Client: c, Scheme: s}
+	deploymentRef := workloadRef{Namespace: testDefaultNamespace, Kind: workloadKindDeployment, Name: "owned-by-other"}
+	daemonSetRef := workloadRef{Namespace: testDefaultNamespace, Kind: workloadKindDaemonSet, Name: "no-daemon-action"}
+
+	got, err := r.hibernateWorkload(ctx, deploymentRef, greencostsv1alpha1.HibernateAction{}, owner)
+	if err != nil {
+		t.Fatalf("hibernateWorkload(no action) error = %v", err)
+	}
+	if got {
+		t.Fatalf("hibernateWorkload(no action) = true, want false")
+	}
+
+	got, err = r.hibernateWorkload(ctx, daemonSetRef, greencostsv1alpha1.HibernateAction{MaxReplicas: &max}, owner)
+	if err != nil {
+		t.Fatalf("hibernateWorkload(daemonset max only) error = %v", err)
+	}
+	if got {
+		t.Fatalf("hibernateWorkload(daemonset max only) = true, want false")
+	}
+
+	got, err = r.hibernateWorkload(ctx, deploymentRef, greencostsv1alpha1.HibernateAction{MaxReplicas: &max}, owner)
+	if err != nil {
+		t.Fatalf("hibernateWorkload(other owner) error = %v", err)
+	}
+	if got {
+		t.Fatalf("hibernateWorkload(other owner) = true, want false")
+	}
+	assertDeploymentReplicas(t, ctx, c, "owned-by-other", 5)
+}
+
 func deploymentForHibernateTest(name string, replicas int32, annotations map[string]string) *appsv1.Deployment {
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testDefaultNamespace, Annotations: annotations},
@@ -176,9 +319,9 @@ func replicaSetForHibernateTest(name string, replicas int32, annotations map[str
 	}
 }
 
-func daemonSetForHibernateTest(name string, selector map[string]string, annotations map[string]string) *appsv1.DaemonSet {
+func daemonSetForHibernateTest(name string, selector map[string]string) *appsv1.DaemonSet {
 	return &appsv1.DaemonSet{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testDefaultNamespace, Annotations: annotations},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testDefaultNamespace},
 		Spec: appsv1.DaemonSetSpec{
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{NodeSelector: selector},
