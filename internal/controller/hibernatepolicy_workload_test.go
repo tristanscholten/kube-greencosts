@@ -10,6 +10,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -62,7 +63,7 @@ func TestHibernatePolicyReconcilerHibernatesAndWakesReplicaWorkloads(t *testing.
 	assertStatefulSetReplicas(t, ctx, c, "db", max)
 	assertReplicaSetReplicas(t, ctx, c, "worker", max)
 	assertReplicaSetReplicas(t, ctx, c, "api-rs", 7)
-	assertHibernatedAnnotation(t, ctx, c, &appsv1.Deployment{}, "api", owner)
+	assertAPIHibernatedAnnotation(t, ctx, c, &appsv1.Deployment{}, owner)
 	assertHPAClamped(t, ctx, c, "api-hpa", max)
 
 	for _, wt := range []greencostsv1alpha1.WorkloadType{
@@ -162,6 +163,88 @@ func TestHibernatePolicyReconcilerSkipsUnsafeNoops(t *testing.T) {
 	assertDeploymentReplicas(t, ctx, c, "owned-by-other", 5)
 }
 
+func TestHibernatePolicyReconcilerReconcileHibernatesOutsideWindow(t *testing.T) {
+	ctx := context.Background()
+	s := newControllerTestScheme(t)
+	max := int32(1)
+	hp := &greencostsv1alpha1.HibernatePolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: testBusinessHoursPolicy, Namespace: testDefaultNamespace},
+		Spec: greencostsv1alpha1.HibernatePolicySpec{
+			WorkloadTypes: []greencostsv1alpha1.WorkloadType{greencostsv1alpha1.WorkloadTypeDeployment},
+			Action:        greencostsv1alpha1.HibernateAction{MaxReplicas: &max},
+		},
+	}
+	deploy := deploymentForHibernateTest("api", 4, nil)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(hp, deploy).WithStatusSubresource(hp).Build()
+	r := &HibernatePolicyReconciler{Client: c, Scheme: s}
+
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(hp)})
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if result.RequeueAfter != windowCheckInterval {
+		t.Fatalf("RequeueAfter = %s, want %s", result.RequeueAfter, windowCheckInterval)
+	}
+
+	assertDeploymentReplicas(t, ctx, c, "api", max)
+	assertAPIHibernatedAnnotation(t, ctx, c, &appsv1.Deployment{}, hibernationOwner{
+		Kind:      controllerTestHibernatePolicyKind,
+		Namespace: testDefaultNamespace,
+		Name:      testBusinessHoursPolicy,
+	})
+
+	var got greencostsv1alpha1.HibernatePolicy
+	if err := c.Get(ctx, client.ObjectKeyFromObject(hp), &got); err != nil {
+		t.Fatalf("getting HibernatePolicy: %v", err)
+	}
+	if !stringSlicesEqual(got.Status.HibernatedWorkloads, []string{"Deployment/api"}) {
+		t.Fatalf("hibernated workloads = %#v, want Deployment/api", got.Status.HibernatedWorkloads)
+	}
+	if condition := findCondition(got.Status.Conditions, conditionTypeReady); condition == nil || condition.Status != metav1.ConditionTrue {
+		t.Fatalf("Ready condition = %#v, want true", condition)
+	}
+}
+
+func TestClusterHibernatePolicyReconcilerReconcileHibernatesAnnotatedWorkloads(t *testing.T) {
+	ctx := context.Background()
+	s := newControllerTestScheme(t)
+	max := int32(1)
+	chp := &greencostsv1alpha1.ClusterHibernatePolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: testBusinessHoursPolicy},
+		Spec: greencostsv1alpha1.ClusterHibernatePolicySpec{
+			Action: greencostsv1alpha1.HibernateAction{MaxReplicas: &max},
+		},
+	}
+	deploy := deploymentForHibernateTest("api", 4, map[string]string{AnnotationClusterHibernatePolicy: testBusinessHoursPolicy})
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(chp, deploy).WithStatusSubresource(chp).Build()
+	r := &ClusterHibernatePolicyReconciler{Client: c, Scheme: s}
+
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(chp)})
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if result.RequeueAfter != windowCheckInterval {
+		t.Fatalf("RequeueAfter = %s, want %s", result.RequeueAfter, windowCheckInterval)
+	}
+
+	assertDeploymentReplicas(t, ctx, c, "api", max)
+	assertAPIHibernatedAnnotation(t, ctx, c, &appsv1.Deployment{}, hibernationOwner{
+		Kind: controllerTestClusterHibernatePolicyKind,
+		Name: testBusinessHoursPolicy,
+	})
+
+	var got greencostsv1alpha1.ClusterHibernatePolicy
+	if err := c.Get(ctx, client.ObjectKeyFromObject(chp), &got); err != nil {
+		t.Fatalf("getting ClusterHibernatePolicy: %v", err)
+	}
+	if !stringSlicesEqual(got.Status.HibernatedWorkloads, []string{"default/Deployment/api"}) {
+		t.Fatalf("hibernated workloads = %#v, want default/Deployment/api", got.Status.HibernatedWorkloads)
+	}
+	if condition := findCondition(got.Status.Conditions, conditionTypeReady); condition == nil || condition.Status != metav1.ConditionTrue {
+		t.Fatalf("Ready condition = %#v, want true", condition)
+	}
+}
+
 func TestClusterHibernatePolicyReconcilerHibernatesAndWakesReplicaWorkloads(t *testing.T) {
 	ctx := context.Background()
 	s := newControllerTestScheme(t)
@@ -199,7 +282,7 @@ func TestClusterHibernatePolicyReconcilerHibernatesAndWakesReplicaWorkloads(t *t
 	assertDeploymentReplicas(t, ctx, c, "api", max)
 	assertStatefulSetReplicas(t, ctx, c, "cache", max)
 	assertReplicaSetReplicas(t, ctx, c, "worker", max)
-	assertHibernatedAnnotation(t, ctx, c, &appsv1.Deployment{}, "api", owner)
+	assertAPIHibernatedAnnotation(t, ctx, c, &appsv1.Deployment{}, owner)
 	assertHPAClamped(t, ctx, c, "api-hpa", max)
 
 	for _, tt := range tests {
@@ -378,12 +461,12 @@ func assertReplicaSetReplicas(t *testing.T, ctx context.Context, c client.Client
 	}
 }
 
-func assertHibernatedAnnotation(t *testing.T, ctx context.Context, c client.Client, obj client.Object, name string, owner hibernationOwner) {
+func assertAPIHibernatedAnnotation(t *testing.T, ctx context.Context, c client.Client, obj client.Object, owner hibernationOwner) {
 	t.Helper()
 	obj.SetNamespace(testDefaultNamespace)
-	obj.SetName(name)
+	obj.SetName("api")
 	if err := c.Get(ctx, client.ObjectKeyFromObject(obj), obj); err != nil {
-		t.Fatalf("getting %T %s: %v", obj, name, err)
+		t.Fatalf("getting %T api: %v", obj, err)
 	}
 	if obj.GetAnnotations()[annotationHibernated] != annotationTrueValue || !ownedBy(obj.GetAnnotations(), owner) {
 		t.Fatalf("hibernation annotations = %#v, want owned by %#v", obj.GetAnnotations(), owner)

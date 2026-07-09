@@ -224,7 +224,7 @@ env:
 ## Prerequisites
 
 - Kubernetes ≥ 1.26
-- Go 1.26.4 or newer for local development
+- Go 1.26.5 or newer for local development
 - `kubectl` configured for your cluster
 - `make` and `podman` (or Docker via `CONTAINER_TOOL=docker`) for building
 - An [ENTSO-E security token](https://transparency.entsoe.eu/usrm/user/createPublicUser), an [enever.nl API token](https://enever.nl/api), or no token when using EnergyZero
