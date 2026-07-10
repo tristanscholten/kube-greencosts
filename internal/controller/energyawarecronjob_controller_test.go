@@ -242,7 +242,7 @@ func TestEnergyPriceSourceToEACJsMapsOnlyReferencesInNamespace(t *testing.T) {
 	otherSource := energyAwareCronJobForController("other-source")
 	otherSource.Spec.EnergyPriceSource.Name = "backup-prices"
 	otherNamespace := energyAwareCronJobForController("other-namespace")
-	otherNamespace.Namespace = "other"
+	otherNamespace.Namespace = testOtherName
 	otherNamespace.Spec.EnergyPriceSource.Name = testEnergyPriceSourceName
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(matching, otherSource, otherNamespace).Build()
 	r := &EnergyAwareCronJobReconciler{Client: c}
