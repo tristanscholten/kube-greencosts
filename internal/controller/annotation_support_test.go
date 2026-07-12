@@ -33,6 +33,54 @@ const (
 	testWorkerName          = "worker"
 )
 
+func TestKindAllowedAppliesClusterPolicyResourceFilters(t *testing.T) {
+	ref := workloadRef{Kind: workloadKindDeployment}
+
+	tests := []struct {
+		name string
+		spec greencostsv1alpha1.ClusterHibernatePolicySpec
+		want bool
+	}{
+		{name: "no filters allow all", want: true},
+		{
+			name: "included matching kind allowed",
+			spec: greencostsv1alpha1.ClusterHibernatePolicySpec{
+				IncludedResources: []greencostsv1alpha1.WorkloadType{greencostsv1alpha1.WorkloadType(workloadKindDeployment)},
+			},
+			want: true,
+		},
+		{
+			name: "included different kind rejected",
+			spec: greencostsv1alpha1.ClusterHibernatePolicySpec{
+				IncludedResources: []greencostsv1alpha1.WorkloadType{greencostsv1alpha1.WorkloadType(workloadKindStatefulSet)},
+			},
+			want: false,
+		},
+		{
+			name: "excluded matching kind rejected",
+			spec: greencostsv1alpha1.ClusterHibernatePolicySpec{
+				ExcludedResources: []greencostsv1alpha1.WorkloadType{greencostsv1alpha1.WorkloadType(workloadKindDeployment)},
+			},
+			want: false,
+		},
+		{
+			name: "excluded different kind allowed",
+			spec: greencostsv1alpha1.ClusterHibernatePolicySpec{
+				ExcludedResources: []greencostsv1alpha1.WorkloadType{greencostsv1alpha1.WorkloadType(workloadKindStatefulSet)},
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := kindAllowed(ref, tt.spec); got != tt.want {
+				t.Fatalf("kindAllowed() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBuildJobCopiesTemplateLabelsAndAnnotations(t *testing.T) {
 	eacj := &greencostsv1alpha1.EnergyAwareCronJob{
 		ObjectMeta: metav1.ObjectMeta{
