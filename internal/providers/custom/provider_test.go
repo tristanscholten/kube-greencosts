@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	greencostsv1alpha1 "github.com/tristanscholten/kube-greencosts/api/v1alpha1"
 	"github.com/tristanscholten/kube-greencosts/internal/providers"
 )
 
@@ -70,6 +71,79 @@ func TestFetchPricesReportsBadJSON(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "parsing price response") {
 		t.Fatalf("FetchPrices() error = %q, want parsing context", err)
+	}
+}
+
+func TestFetchPricesReportsHTTPStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	_, err := New(server.URL, "").FetchPrices(context.Background(), providers.FetchPricesRequest{})
+	if err == nil {
+		t.Fatal("FetchPrices() accepted non-OK status")
+	}
+	if !strings.Contains(err.Error(), "provider returned HTTP 429") {
+		t.Fatalf("FetchPrices() error = %q, want HTTP status context", err)
+	}
+}
+
+func TestFactoryValidatesConfig(t *testing.T) {
+	factory := Factory()
+
+	tests := []struct {
+		name    string
+		spec    greencostsv1alpha1.EnergyPriceSourceSpec
+		wantErr string
+	}{
+		{
+			name:    "missing custom config",
+			wantErr: "customProviderConfig is required",
+		},
+		{
+			name: "empty url",
+			spec: greencostsv1alpha1.EnergyPriceSourceSpec{
+				Providers: greencostsv1alpha1.ProviderConfig{
+					CustomProviderConfig: &greencostsv1alpha1.CustomProviderConfig{},
+				},
+			},
+			wantErr: "customProviderConfig.url must not be empty",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := factory(tt.spec, "token")
+			if err == nil {
+				t.Fatal("Factory() error = nil")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Factory() error = %q, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestFactoryBuildsProvider(t *testing.T) {
+	got, err := Factory()(greencostsv1alpha1.EnergyPriceSourceSpec{
+		Providers: greencostsv1alpha1.ProviderConfig{
+			CustomProviderConfig: &greencostsv1alpha1.CustomProviderConfig{URL: "https://prices.example.test"},
+		},
+	}, "token")
+	if err != nil {
+		t.Fatalf("Factory() error = %v", err)
+	}
+
+	provider, ok := got.(*Provider)
+	if !ok {
+		t.Fatalf("Factory() provider type = %T, want *Provider", got)
+	}
+	if provider.url != "https://prices.example.test" {
+		t.Fatalf("Factory() url = %q", provider.url)
+	}
+	if provider.bearerToken != "token" {
+		t.Fatalf("Factory() bearerToken = %q", provider.bearerToken)
 	}
 }
 
