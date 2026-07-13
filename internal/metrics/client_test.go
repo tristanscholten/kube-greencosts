@@ -2,6 +2,9 @@ package metrics
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -91,6 +94,92 @@ func TestNewClientRejectsInvalidPrometheusURL(t *testing.T) {
 	if err == nil {
 		t.Fatal("NewClient() accepted invalid Prometheus URL")
 	}
+}
+
+func TestQueryNamespaceNetworkUsesPrometheusValue(t *testing.T) {
+	server := prometheusTestServer(t, func(query string) string {
+		if !strings.Contains(query, `namespace="apps"`) {
+			t.Fatalf("query = %q, want namespace selector", query)
+		}
+		if !strings.Contains(query, "container_network_transmit_bytes_total") || !strings.Contains(query, "container_network_receive_bytes_total") {
+			t.Fatalf("query = %q, want network counters", query)
+		}
+		return `{"status":"success","data":{"resultType":"scalar","result":[1234,"2.5"]}}`
+	})
+	defer server.Close()
+
+	client, err := NewClient(metricsfake.NewSimpleClientset(), server.URL)
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	got, err := client.QueryNamespaceNetwork(context.Background(), "apps", 2*time.Minute)
+	if err != nil {
+		t.Fatalf("QueryNamespaceNetwork() error = %v", err)
+	}
+	if want := int64(2500); got.MilliValue() != want {
+		t.Fatalf("QueryNamespaceNetwork() = %dm, want %dm", got.MilliValue(), want)
+	}
+}
+
+func TestQueryNamespaceIngressRPSUsesPrometheusValue(t *testing.T) {
+	server := prometheusTestServer(t, func(query string) string {
+		if !strings.Contains(query, `namespace="apps"`) {
+			t.Fatalf("query = %q, want namespace selector", query)
+		}
+		if !strings.Contains(query, "nginx_ingress_controller_requests") {
+			t.Fatalf("query = %q, want ingress counter", query)
+		}
+		return `{"status":"success","data":{"resultType":"vector","result":[{"metric":{},"value":[1234,"7.25"]}]}}`
+	})
+	defer server.Close()
+
+	client, err := NewClient(metricsfake.NewSimpleClientset(), server.URL)
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	got, err := client.QueryNamespaceIngressRPS(context.Background(), "apps", time.Minute)
+	if err != nil {
+		t.Fatalf("QueryNamespaceIngressRPS() error = %v", err)
+	}
+	if got != 7.25 {
+		t.Fatalf("QueryNamespaceIngressRPS() = %v, want 7.25", got)
+	}
+}
+
+func TestPrometheusQueryErrorsAreWrapped(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "prometheus unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(metricsfake.NewSimpleClientset(), server.URL)
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	if _, err := client.QueryNamespaceNetwork(context.Background(), "apps", time.Minute); err == nil || !strings.Contains(err.Error(), `querying network bytes for namespace "apps"`) {
+		t.Fatalf("QueryNamespaceNetwork() error = %v, want wrapped query error", err)
+	}
+	if _, err := client.QueryNamespaceIngressRPS(context.Background(), "apps", time.Minute); err == nil || !strings.Contains(err.Error(), `querying ingress RPS for namespace "apps"`) {
+		t.Fatalf("QueryNamespaceIngressRPS() error = %v, want wrapped query error", err)
+	}
+}
+
+func prometheusTestServer(t *testing.T, responseFor func(query string) string) *httptest.Server {
+	t.Helper()
+
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/query" {
+			t.Fatalf("path = %q, want /api/v1/query", r.URL.Path)
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("ParseForm() error = %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(responseFor(r.Form.Get("query"))))
+	}))
 }
 
 func TestPromDuration(t *testing.T) {
