@@ -234,6 +234,204 @@ func TestFailWithStoresReadyErrorCondition(t *testing.T) {
 	}
 }
 
+func TestEnergyAwareCronJobReconcileSuspendClearsNextScheduledTime(t *testing.T) {
+	ctx := context.Background()
+	s := newEnergyAwareCronJobTestScheme(t)
+	suspend := true
+	next := metav1.NewTime(time.Now().Add(time.Hour))
+	eacj := energyAwareCronJobForController("nightly")
+	eacj.Spec.CronJob.Suspend = &suspend
+	eacj.Status.NextScheduledTime = &next
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithStatusSubresource(&greencostsv1alpha1.EnergyAwareCronJob{}).
+		WithObjects(eacj).
+		Build()
+	r := &EnergyAwareCronJobReconciler{Client: c, Scheme: s}
+
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(eacj)})
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if !result.IsZero() {
+		t.Fatalf("Reconcile() result = %#v, want zero", result)
+	}
+
+	got := getEnergyAwareCronJob(t, ctx, c, eacj.Name)
+	if got.Status.NextScheduledTime != nil {
+		t.Fatalf("NextScheduledTime = %s, want nil", got.Status.NextScheduledTime.Time)
+	}
+}
+
+func TestEnergyAwareCronJobReconcileZeroDurationDispatchesImmediately(t *testing.T) {
+	ctx := context.Background()
+	s := newEnergyAwareCronJobTestScheme(t)
+	eacj := energyAwareCronJobForController("nightly")
+	eacj.CreationTimestamp = metav1.NewTime(time.Now().Add(-2 * time.Minute).Truncate(time.Minute))
+	eacj.Spec.EnergyStrategy.ScheduleWindow.Duration = 0
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithStatusSubresource(&greencostsv1alpha1.EnergyAwareCronJob{}).
+		WithObjects(eacj).
+		Build()
+	r := &EnergyAwareCronJobReconciler{Client: c, Scheme: s}
+
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(eacj)})
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if result.RequeueAfter != 0 {
+		t.Fatalf("Reconcile() result = %#v, want no delayed requeue after dispatch", result)
+	}
+
+	got := getEnergyAwareCronJob(t, ctx, c, eacj.Name)
+	if got.Status.LastScheduleTime == nil {
+		t.Fatal("LastScheduleTime = nil, want dispatch timestamp")
+	}
+	if len(got.Status.Active) != 1 {
+		t.Fatalf("active refs = %#v, want one dispatched job", got.Status.Active)
+	}
+	assertJobExists(t, ctx, c, got.Status.Active[0].Name)
+}
+
+func TestEnergyAwareCronJobReconcileForbidConcurrentSkipsActiveJob(t *testing.T) {
+	ctx := context.Background()
+	s := newEnergyAwareCronJobTestScheme(t)
+	eacj := energyAwareCronJobForController("nightly")
+	eacj.CreationTimestamp = metav1.NewTime(time.Now().Add(-2 * time.Minute).Truncate(time.Minute))
+	eacj.Spec.CronJob.ConcurrencyPolicy = batchv1.ForbidConcurrent
+	active := energyAwareJob("active", metav1.Now())
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithStatusSubresource(&greencostsv1alpha1.EnergyAwareCronJob{}).
+		WithObjects(eacj, active).
+		Build()
+	r := &EnergyAwareCronJobReconciler{Client: c, Scheme: s}
+
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(eacj)})
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if !result.IsZero() {
+		t.Fatalf("Reconcile() result = %#v, want zero", result)
+	}
+
+	got := getEnergyAwareCronJob(t, ctx, c, eacj.Name)
+	if got.Status.LastScheduleTime == nil {
+		t.Fatal("LastScheduleTime = nil, want skipped schedule timestamp")
+	}
+	if len(got.Status.Active) != 1 || got.Status.Active[0].Name != active.Name {
+		t.Fatalf("active refs = %#v, want existing active job", got.Status.Active)
+	}
+}
+
+func TestEnergyAwareCronJobReconcileMissingEnergyPriceSourceStoresError(t *testing.T) {
+	ctx := context.Background()
+	s := newEnergyAwareCronJobTestScheme(t)
+	eacj := energyAwareCronJobForController("nightly")
+	eacj.CreationTimestamp = metav1.NewTime(time.Now().Add(-2 * time.Minute).Truncate(time.Minute))
+	eacj.Spec.EnergyStrategy.ScheduleWindow.Duration = time.Hour
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithStatusSubresource(&greencostsv1alpha1.EnergyAwareCronJob{}).
+		WithObjects(eacj).
+		Build()
+	r := &EnergyAwareCronJobReconciler{Client: c, Scheme: s}
+
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(eacj)})
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if result.RequeueAfter != retryShort {
+		t.Fatalf("RequeueAfter = %s, want %s", result.RequeueAfter, retryShort)
+	}
+
+	got := getEnergyAwareCronJob(t, ctx, c, eacj.Name)
+	condition := findCondition(got.Status.Conditions, conditionTypeReady)
+	if condition == nil || condition.Status != metav1.ConditionFalse || condition.Reason != conditionReasonError {
+		t.Fatalf("Ready condition = %#v, want missing EnergyPriceSource error", condition)
+	}
+	if !strings.Contains(condition.Message, `EnergyPriceSource "prices" not found`) {
+		t.Fatalf("Ready message = %q, want missing EnergyPriceSource", condition.Message)
+	}
+}
+
+func TestEnergyAwareCronJobReconcileNoPriceDataRetries(t *testing.T) {
+	ctx := context.Background()
+	s := newEnergyAwareCronJobTestScheme(t)
+	eacj := energyAwareCronJobForController("nightly")
+	eacj.CreationTimestamp = metav1.NewTime(time.Now().Add(-2 * time.Minute).Truncate(time.Minute))
+	eacj.Spec.EnergyStrategy.ScheduleWindow.Duration = time.Hour
+	eps := &greencostsv1alpha1.EnergyPriceSource{
+		ObjectMeta: metav1.ObjectMeta{Name: testEnergyPriceSourceName, Namespace: testDefaultNamespace},
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithStatusSubresource(&greencostsv1alpha1.EnergyAwareCronJob{}).
+		WithObjects(eacj, eps).
+		Build()
+	r := &EnergyAwareCronJobReconciler{Client: c, Scheme: s}
+
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(eacj)})
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if result.RequeueAfter != retryShort {
+		t.Fatalf("RequeueAfter = %s, want %s", result.RequeueAfter, retryShort)
+	}
+
+	got := getEnergyAwareCronJob(t, ctx, c, eacj.Name)
+	if got.Status.NextScheduledTime != nil {
+		t.Fatalf("NextScheduledTime = %s, want nil until price data exists", got.Status.NextScheduledTime.Time)
+	}
+}
+
+func TestEnergyAwareCronJobReconcileStoresFutureOptimalTime(t *testing.T) {
+	ctx := context.Background()
+	s := newEnergyAwareCronJobTestScheme(t)
+	now := time.Now().Truncate(time.Minute)
+	eacj := energyAwareCronJobForController("nightly")
+	eacj.CreationTimestamp = metav1.NewTime(now.Add(-2 * time.Minute))
+	eacj.Spec.EnergyStrategy.ScheduleWindow.Duration = 3 * time.Minute
+	eps := &greencostsv1alpha1.EnergyPriceSource{
+		ObjectMeta: metav1.ObjectMeta{Name: testEnergyPriceSourceName, Namespace: testDefaultNamespace},
+		Status: greencostsv1alpha1.EnergyPriceSourceStatus{
+			Prices: []greencostsv1alpha1.PricePoint{
+				{At: metav1.NewTime(now.Add(-time.Minute)), EurPerMWh: 100},
+				{At: metav1.NewTime(now), EurPerMWh: 80},
+				{At: metav1.NewTime(now.Add(time.Minute)), EurPerMWh: 10},
+			},
+		},
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithStatusSubresource(&greencostsv1alpha1.EnergyAwareCronJob{}).
+		WithObjects(eacj, eps).
+		Build()
+	r := &EnergyAwareCronJobReconciler{Client: c, Scheme: s}
+
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(eacj)})
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if result.RequeueAfter <= 0 || result.RequeueAfter > 2*time.Minute {
+		t.Fatalf("RequeueAfter = %s, want sleep until future optimal time", result.RequeueAfter)
+	}
+
+	got := getEnergyAwareCronJob(t, ctx, c, eacj.Name)
+	want := now.Add(time.Minute)
+	if got.Status.NextScheduledTime == nil || !got.Status.NextScheduledTime.Time.Equal(want) {
+		t.Fatalf("NextScheduledTime = %#v, want %s", got.Status.NextScheduledTime, want)
+	}
+	if got.Status.NextCronWindow == nil || !got.Status.NextCronWindow.Time.Equal(now.Add(-time.Minute)) {
+		t.Fatalf("NextCronWindow = %#v, want %s", got.Status.NextCronWindow, now.Add(-time.Minute))
+	}
+	condition := findCondition(got.Status.Conditions, conditionTypeReady)
+	if condition == nil || condition.Status != metav1.ConditionTrue || condition.Reason != "Scheduled" {
+		t.Fatalf("Ready condition = %#v, want Scheduled", condition)
+	}
+}
+
 func TestEnergyPriceSourceToEACJsMapsOnlyReferencesInNamespace(t *testing.T) {
 	ctx := context.Background()
 	s := newEnergyAwareCronJobTestScheme(t)
@@ -311,6 +509,20 @@ func energyAwareJob(name string, start metav1.Time) *batchv1.Job {
 		},
 		Status: batchv1.JobStatus{StartTime: &start},
 	}
+}
+
+func getEnergyAwareCronJob(
+	t *testing.T,
+	ctx context.Context,
+	c client.Client,
+	name string,
+) greencostsv1alpha1.EnergyAwareCronJob {
+	t.Helper()
+	var got greencostsv1alpha1.EnergyAwareCronJob
+	if err := c.Get(ctx, client.ObjectKey{Namespace: testDefaultNamespace, Name: name}, &got); err != nil {
+		t.Fatalf("getting EnergyAwareCronJob %s: %v", name, err)
+	}
+	return got
 }
 
 func assertJobDeleted(t *testing.T, ctx context.Context, c client.Client, name string) {
