@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"testing"
+	"time"
 
 	greencostsv1alpha1 "github.com/tristanscholten/kube-greencosts/api/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -18,8 +19,10 @@ import (
 const (
 	controllerTestClusterHibernatePolicyKind = "ClusterHibernatePolicy"
 	controllerTestDaemonSetName              = "agents"
+	controllerTestDeploymentAPI              = "Deployment/api"
 	controllerTestSpotNodePool               = "spot"
 	controllerTestSpotNodeSelectorJSON       = `{"nodepool":"spot"}`
+	controllerTestUTC                        = "UTC"
 )
 
 func TestHibernatePolicyReconcilerHibernatesAndWakesReplicaWorkloads(t *testing.T) {
@@ -42,7 +45,7 @@ func TestHibernatePolicyReconcilerHibernatesAndWakesReplicaWorkloads(t *testing.
 		kind greencostsv1alpha1.WorkloadType
 		want []string
 	}{
-		{name: "deployment", kind: greencostsv1alpha1.WorkloadTypeDeployment, want: []string{"Deployment/api"}},
+		{name: "deployment", kind: greencostsv1alpha1.WorkloadTypeDeployment, want: []string{controllerTestDeploymentAPI}},
 		{name: "statefulset", kind: greencostsv1alpha1.WorkloadTypeStatefulSet, want: []string{"StatefulSet/db"}},
 		{name: "replicaset skips Deployment-owned siblings", kind: greencostsv1alpha1.WorkloadTypeReplicaSet, want: []string{"ReplicaSet/worker"}},
 	}
@@ -197,8 +200,62 @@ func TestHibernatePolicyReconcilerReconcileHibernatesOutsideWindow(t *testing.T)
 	if err := c.Get(ctx, client.ObjectKeyFromObject(hp), &got); err != nil {
 		t.Fatalf("getting HibernatePolicy: %v", err)
 	}
-	if !stringSlicesEqual(got.Status.HibernatedWorkloads, []string{"Deployment/api"}) {
+	if !stringSlicesEqual(got.Status.HibernatedWorkloads, []string{controllerTestDeploymentAPI}) {
 		t.Fatalf("hibernated workloads = %#v, want Deployment/api", got.Status.HibernatedWorkloads)
+	}
+	if condition := findCondition(got.Status.Conditions, conditionTypeReady); condition == nil || condition.Status != metav1.ConditionTrue {
+		t.Fatalf("Ready condition = %#v, want true", condition)
+	}
+}
+
+func TestHibernatePolicyReconcilerReconcileWakesInsideWindow(t *testing.T) {
+	ctx := context.Background()
+	s := newControllerTestScheme(t)
+	min := int32(1)
+	max := int32(8)
+	owner := hibernationOwner{
+		Kind:      controllerTestHibernatePolicyKind,
+		Namespace: testDefaultNamespace,
+		Name:      testBusinessHoursPolicy,
+	}
+	hp := &greencostsv1alpha1.HibernatePolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: testBusinessHoursPolicy, Namespace: testDefaultNamespace},
+		Spec: greencostsv1alpha1.HibernatePolicySpec{
+			WorkloadTypes:       []greencostsv1alpha1.WorkloadType{greencostsv1alpha1.WorkloadTypeDeployment},
+			AvailabilityWindows: []greencostsv1alpha1.AvailabilityWindow{currentAvailabilityWindow()},
+		},
+		Status: greencostsv1alpha1.HibernatePolicyStatus{HibernatedWorkloads: []string{controllerTestDeploymentAPI}},
+	}
+	deploy := deploymentForHibernateTest("api", 1, map[string]string{annotationOriginalReplicas: "4"})
+	markHibernated(deploy.Annotations, owner)
+	hpa := hpaForHibernateTest("api-hpa", workloadKindDeployment, "api", 1, 1)
+	hpa.Annotations = map[string]string{
+		annotationOriginalHPAMin: "1",
+		annotationOriginalHPAMax: "8",
+	}
+	hpa.Spec.MinReplicas = &min
+	hpa.Spec.MaxReplicas = 1
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(hp, deploy, hpa).WithStatusSubresource(hp).Build()
+	r := &HibernatePolicyReconciler{Client: c, Scheme: s}
+
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(hp)})
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if result.RequeueAfter <= 0 || result.RequeueAfter > windowCheckInterval {
+		t.Fatalf("RequeueAfter = %s, want positive duration up to %s", result.RequeueAfter, windowCheckInterval)
+	}
+
+	assertDeploymentReplicas(t, ctx, c, "api", 4)
+	assertNoHibernationAnnotation(t, ctx, c, &appsv1.Deployment{}, "api")
+	assertHPARestored(t, ctx, c, "api-hpa", min, max)
+
+	var got greencostsv1alpha1.HibernatePolicy
+	if err := c.Get(ctx, client.ObjectKeyFromObject(hp), &got); err != nil {
+		t.Fatalf("getting HibernatePolicy: %v", err)
+	}
+	if len(got.Status.HibernatedWorkloads) != 0 {
+		t.Fatalf("hibernated workloads = %#v, want empty", got.Status.HibernatedWorkloads)
 	}
 	if condition := findCondition(got.Status.Conditions, conditionTypeReady); condition == nil || condition.Status != metav1.ConditionTrue {
 		t.Fatalf("Ready condition = %#v, want true", condition)
@@ -239,6 +296,58 @@ func TestClusterHibernatePolicyReconcilerReconcileHibernatesAnnotatedWorkloads(t
 	}
 	if !stringSlicesEqual(got.Status.HibernatedWorkloads, []string{"default/Deployment/api"}) {
 		t.Fatalf("hibernated workloads = %#v, want default/Deployment/api", got.Status.HibernatedWorkloads)
+	}
+	if condition := findCondition(got.Status.Conditions, conditionTypeReady); condition == nil || condition.Status != metav1.ConditionTrue {
+		t.Fatalf("Ready condition = %#v, want true", condition)
+	}
+}
+
+func TestClusterHibernatePolicyReconcilerReconcileWakesNamespaceWorkloads(t *testing.T) {
+	ctx := context.Background()
+	s := newControllerTestScheme(t)
+	owner := hibernationOwner{Kind: controllerTestClusterHibernatePolicyKind, Name: testBusinessHoursPolicy}
+	chp := &greencostsv1alpha1.ClusterHibernatePolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: testBusinessHoursPolicy},
+		Spec: greencostsv1alpha1.ClusterHibernatePolicySpec{
+			AvailabilityWindows: []greencostsv1alpha1.AvailabilityWindow{currentAvailabilityWindow()},
+		},
+		Status: greencostsv1alpha1.ClusterHibernatePolicyStatus{HibernatedWorkloads: []string{"default/DaemonSet/agents"}},
+	}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+		Name:        testDefaultNamespace,
+		Annotations: map[string]string{AnnotationClusterHibernatePolicy: testBusinessHoursPolicy},
+	}}
+	ds := daemonSetForHibernateTest(controllerTestDaemonSetName, map[string]string{hibernateNodeSelectorKey: hibernateNodeSelectorValue})
+	ds.Annotations = map[string]string{annotationOriginalNodeSelector: controllerTestSpotNodeSelectorJSON}
+	markHibernated(ds.Annotations, owner)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(chp, ns, ds).WithStatusSubresource(chp).Build()
+	r := &ClusterHibernatePolicyReconciler{Client: c, Scheme: s}
+
+	result, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(chp)})
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if result.RequeueAfter <= 0 || result.RequeueAfter > windowCheckInterval {
+		t.Fatalf("RequeueAfter = %s, want positive duration up to %s", result.RequeueAfter, windowCheckInterval)
+	}
+
+	var woke appsv1.DaemonSet
+	if err := c.Get(ctx, client.ObjectKey{Namespace: testDefaultNamespace, Name: controllerTestDaemonSetName}, &woke); err != nil {
+		t.Fatalf("getting DaemonSet after wake: %v", err)
+	}
+	if woke.Spec.Template.Spec.NodeSelector["nodepool"] != controllerTestSpotNodePool || len(woke.Spec.Template.Spec.NodeSelector) != 1 {
+		t.Fatalf("restored nodeSelector = %#v, want original", woke.Spec.Template.Spec.NodeSelector)
+	}
+	if woke.Annotations[annotationHibernated] != "" || woke.Annotations[annotationOriginalNodeSelector] != "" {
+		t.Fatalf("wake left hibernation annotations: %#v", woke.Annotations)
+	}
+
+	var got greencostsv1alpha1.ClusterHibernatePolicy
+	if err := c.Get(ctx, client.ObjectKeyFromObject(chp), &got); err != nil {
+		t.Fatalf("getting ClusterHibernatePolicy: %v", err)
+	}
+	if len(got.Status.HibernatedWorkloads) != 0 {
+		t.Fatalf("hibernated workloads = %#v, want empty", got.Status.HibernatedWorkloads)
 	}
 	if condition := findCondition(got.Status.Conditions, conditionTypeReady); condition == nil || condition.Status != metav1.ConditionTrue {
 		t.Fatalf("Ready condition = %#v, want true", condition)
@@ -410,6 +519,46 @@ func daemonSetForHibernateTest(name string, selector map[string]string) *appsv1.
 				Spec: corev1.PodSpec{NodeSelector: selector},
 			},
 		},
+	}
+}
+
+func currentAvailabilityWindow() greencostsv1alpha1.AvailabilityWindow {
+	zone := controllerTestUTC
+	loc := time.UTC
+	if time.Now().In(loc).Hour() == 23 {
+		zone = "Pacific/Honolulu"
+		loc, _ = time.LoadLocation(zone)
+	}
+	now := time.Now().In(loc)
+	from := now.Add(-time.Hour)
+	if from.Day() != now.Day() {
+		from = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	}
+
+	return greencostsv1alpha1.AvailabilityWindow{
+		From:     from.Format("15:04"),
+		Until:    now.Add(time.Hour).Format("15:04"),
+		Timezone: zone,
+		Weekdays: []greencostsv1alpha1.Weekday{weekdaySpec(now.Weekday())},
+	}
+}
+
+func weekdaySpec(day time.Weekday) greencostsv1alpha1.Weekday {
+	switch day {
+	case time.Monday:
+		return greencostsv1alpha1.Monday
+	case time.Tuesday:
+		return greencostsv1alpha1.Tuesday
+	case time.Wednesday:
+		return greencostsv1alpha1.Wednesday
+	case time.Thursday:
+		return greencostsv1alpha1.Thursday
+	case time.Friday:
+		return greencostsv1alpha1.Friday
+	case time.Saturday:
+		return greencostsv1alpha1.Saturday
+	default:
+		return greencostsv1alpha1.Sunday
 	}
 }
 
