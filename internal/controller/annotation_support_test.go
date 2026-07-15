@@ -235,6 +235,41 @@ func TestParseHHMMRejectsTrailingText(t *testing.T) {
 	}
 }
 
+func TestSuspendHPAForActionRequiresMaxReplicas(t *testing.T) {
+	ctx := context.Background()
+	s := runtime.NewScheme()
+	if err := scheme.AddToScheme(s); err != nil {
+		t.Fatalf("adding Kubernetes types to scheme: %v", err)
+	}
+
+	minReplicas := int32(2)
+	hpa := &autoscalingv2.HorizontalPodAutoscaler{
+		ObjectMeta: metav1.ObjectMeta{Name: testWorkerName, Namespace: testDefaultNamespace},
+		Spec: autoscalingv2.HorizontalPodAutoscalerSpec{
+			MinReplicas: &minReplicas,
+			MaxReplicas: 5,
+			ScaleTargetRef: autoscalingv2.CrossVersionObjectReference{
+				APIVersion: testAppsV1,
+				Kind:       workloadKindDeployment,
+				Name:       testWorkerName,
+			},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(hpa).Build()
+
+	if err := suspendHPAForAction(ctx, c, testDefaultNamespace, workloadKindDeployment, testWorkerName, greencostsv1alpha1.HibernateAction{}); err != nil {
+		t.Fatalf("suspendHPAForAction() error = %v", err)
+	}
+
+	var got autoscalingv2.HorizontalPodAutoscaler
+	if err := c.Get(ctx, client.ObjectKey{Namespace: testDefaultNamespace, Name: testWorkerName}, &got); err != nil {
+		t.Fatalf("getting HPA: %v", err)
+	}
+	if got.Annotations[annotationOriginalHPAMin] != "" || got.Spec.MaxReplicas != 5 {
+		t.Fatalf("HPA changed without MaxReplicas action: %#v", got)
+	}
+}
+
 func TestSuspendHPAZeroTargetDetachesAndRestoresScaleTarget(t *testing.T) {
 	ctx := context.Background()
 	s := runtime.NewScheme()
@@ -458,5 +493,103 @@ func TestClusterHibernatePolicyCollectsAnnotatedResources(t *testing.T) {
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("collected refs = %v, want %v", got, want)
+	}
+}
+
+func TestClusterHibernatePolicyCollectsNamespaceWorkloadsByKind(t *testing.T) {
+	ctx := context.Background()
+	s := runtime.NewScheme()
+	if err := scheme.AddToScheme(s); err != nil {
+		t.Fatalf("adding Kubernetes types to scheme: %v", err)
+	}
+	if err := greencostsv1alpha1.AddToScheme(s); err != nil {
+		t.Fatalf("adding greencosts types to scheme: %v", err)
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(
+			&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: testTrainerApp, Namespace: testDefaultNamespace}},
+			&appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "db", Namespace: testDefaultNamespace}},
+			&appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Name: "node-agent", Namespace: testDefaultNamespace}},
+			&appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Name: testWorkerName, Namespace: testDefaultNamespace}},
+			&appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{
+				Name:      "owned-by-deployment",
+				Namespace: testDefaultNamespace,
+				OwnerReferences: []metav1.OwnerReference{
+					{APIVersion: testAppsV1, Kind: workloadKindDeployment, Name: testTrainerApp},
+				},
+			}},
+			&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
+				Name:      "claimed-by-other-policy",
+				Namespace: testDefaultNamespace,
+				Annotations: map[string]string{
+					AnnotationClusterHibernatePolicy: testOtherName,
+				},
+			}},
+		).
+		Build()
+
+	reconciler := &ClusterHibernatePolicyReconciler{Client: c, Scheme: s}
+	refs, err := reconciler.allWorkloadsInNamespace(ctx, testDefaultNamespace, testBusinessHoursPolicy)
+	if err != nil {
+		t.Fatalf("allWorkloadsInNamespace() error = %v", err)
+	}
+
+	got := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		got = append(got, ref.String())
+	}
+	slices.Sort(got)
+
+	want := []string{
+		"default/DaemonSet/node-agent",
+		"default/Deployment/trainer",
+		testDefaultNamespace + "/ReplicaSet/" + testWorkerName,
+		"default/StatefulSet/db",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("namespace refs = %v, want %v", got, want)
+	}
+}
+
+func TestClusterHibernatePolicyDeduplicatesNamespaceAndDirectAnnotations(t *testing.T) {
+	ctx := context.Background()
+	s := runtime.NewScheme()
+	if err := scheme.AddToScheme(s); err != nil {
+		t.Fatalf("adding Kubernetes types to scheme: %v", err)
+	}
+	if err := greencostsv1alpha1.AddToScheme(s); err != nil {
+		t.Fatalf("adding greencosts types to scheme: %v", err)
+	}
+
+	c := fake.NewClientBuilder().
+		WithScheme(s).
+		WithObjects(
+			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+				Name: testDefaultNamespace,
+				Annotations: map[string]string{
+					AnnotationClusterHibernatePolicy: testBusinessHoursPolicy,
+				},
+			}},
+			&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
+				Name:      testTrainerApp,
+				Namespace: testDefaultNamespace,
+				Annotations: map[string]string{
+					AnnotationClusterHibernatePolicy: testBusinessHoursPolicy,
+				},
+			}},
+		).
+		Build()
+
+	reconciler := &ClusterHibernatePolicyReconciler{Client: c, Scheme: s}
+	refs, err := reconciler.collectWorkloads(ctx, testBusinessHoursPolicy, greencostsv1alpha1.ClusterHibernatePolicySpec{})
+	if err != nil {
+		t.Fatalf("collectWorkloads() error = %v", err)
+	}
+
+	want := testDefaultNamespace + "/Deployment/" + testTrainerApp
+	if len(refs) != 1 || refs[0].String() != want {
+		t.Fatalf("refs = %#v, want one %s", refs, want)
 	}
 }
