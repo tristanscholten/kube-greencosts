@@ -138,6 +138,75 @@ func TestParsePublicationRejectsUnsupportedResolution(t *testing.T) {
 	}
 }
 
+func TestParsePublicationRejectsBadPeriodStart(t *testing.T) {
+	body := []byte(`<Publication_MarketDocument>
+		<TimeSeries><Period>
+			<timeInterval><start>not-time</start></timeInterval>
+			<resolution>PT15M</resolution>
+		</Period></TimeSeries>
+	</Publication_MarketDocument>`)
+
+	_, err := parsePublication(body)
+	if err == nil || !strings.Contains(err.Error(), `parsing period start "not-time"`) {
+		t.Fatalf("parsePublication() error = %v, want period start context", err)
+	}
+}
+
+func TestParseResolution(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want time.Duration
+	}{
+		{name: "quarter hour", in: "PT15M", want: 15 * time.Minute},
+		{name: "half hour", in: "PT30M", want: 30 * time.Minute},
+		{name: "sixty minutes", in: "PT60M", want: time.Hour},
+		{name: "one hour", in: "PT1H", want: time.Hour},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseResolution(tt.in)
+			if err != nil {
+				t.Fatalf("parseResolution(%q) error = %v", tt.in, err)
+			}
+			if got != tt.want {
+				t.Fatalf("parseResolution(%q) = %s, want %s", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseTime(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want time.Time
+	}{
+		{name: "entsoe minute format", in: "2026-06-26T00:00Z", want: time.Date(2026, 6, 26, 0, 0, 0, 0, time.UTC)},
+		{name: "rfc3339 fallback", in: "2026-06-26T00:00:30Z", want: time.Date(2026, 6, 26, 0, 0, 30, 0, time.UTC)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseTime(tt.in)
+			if err != nil {
+				t.Fatalf("parseTime(%q) error = %v", tt.in, err)
+			}
+			if !got.Equal(tt.want) {
+				t.Fatalf("parseTime(%q) = %s, want %s", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseTimeRejectsMalformedInput(t *testing.T) {
+	_, err := parseTime("not-time")
+	if err == nil {
+		t.Fatal("parseTime() accepted malformed input")
+	}
+}
+
 func TestParseAcknowledgement(t *testing.T) {
 	got := parseAcknowledgement([]byte(`<Acknowledgement_MarketDocument>
 		<Reason><code>999</code><text>bad token</text></Reason>

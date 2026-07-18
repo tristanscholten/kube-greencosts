@@ -11,6 +11,7 @@ import (
 
 	greencostsv1alpha1 "github.com/tristanscholten/kube-greencosts/api/v1alpha1"
 	"github.com/tristanscholten/kube-greencosts/internal/providers"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestFetchPricesSendsContextAndSortsResponseByStartTime(t *testing.T) {
@@ -89,6 +90,13 @@ func TestFetchPricesReportsHTTPStatus(t *testing.T) {
 	}
 }
 
+func TestFetchPricesReportsInvalidURL(t *testing.T) {
+	_, err := New("://bad-url", "").FetchPrices(context.Background(), providers.FetchPricesRequest{})
+	if err == nil || !strings.Contains(err.Error(), "building request") {
+		t.Fatalf("FetchPrices() error = %v, want request-build context", err)
+	}
+}
+
 func TestFactoryValidatesConfig(t *testing.T) {
 	factory := Factory()
 
@@ -154,5 +162,22 @@ func TestConvertIntervalsRejectsBadTimestamp(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "interval 0: parsing start") {
 		t.Fatalf("convertIntervals() error = %q, want interval context", err)
+	}
+}
+
+func TestSortPricePointsByStartTimeKeepsEqualTimes(t *testing.T) {
+	start := time.Date(2026, 6, 26, 0, 0, 0, 0, time.UTC)
+	points := []greencostsv1alpha1.PricePoint{
+		{At: metav1.NewTime(start), EurPerMWh: 20},
+		{At: metav1.NewTime(start.Add(-time.Hour)), EurPerMWh: 10},
+		{At: metav1.NewTime(start), EurPerMWh: 30},
+	}
+
+	sortPricePointsByStartTime(points)
+	if !points[0].At.Time.Equal(start.Add(-time.Hour)) {
+		t.Fatalf("first point time = %s, want earliest", points[0].At.Time)
+	}
+	if !points[1].At.Time.Equal(start) || !points[2].At.Time.Equal(start) {
+		t.Fatalf("equal-time points sorted to %s and %s, want both %s", points[1].At.Time, points[2].At.Time, start)
 	}
 }
