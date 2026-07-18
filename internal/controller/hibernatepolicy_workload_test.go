@@ -25,6 +25,7 @@ const (
 	controllerTestUTC                        = "UTC"
 )
 
+//nolint:goconst // repeated workload names keep table cases readable.
 func TestHibernatePolicyReconcilerHibernatesAndWakesReplicaWorkloads(t *testing.T) {
 	ctx := context.Background()
 	s := newControllerTestScheme(t)
@@ -490,6 +491,91 @@ func TestClusterHibernatePolicyReconcilerSkipsUnsafeNoops(t *testing.T) {
 	assertDeploymentReplicas(t, ctx, c, "owned-by-other", 5)
 }
 
+func TestClusterHibernatePolicyReconcilerKeepsOwnedHibernatedDeploymentClamped(t *testing.T) {
+	ctx := context.Background()
+	s := newControllerTestScheme(t)
+	max := int32(1)
+	owner := hibernationOwner{Kind: controllerTestClusterHibernatePolicyKind, Name: testBusinessHoursPolicy}
+	deploy := deploymentForHibernateTest("api", 0, map[string]string{annotationOriginalReplicas: "6"})
+	markHibernated(deploy.Annotations, owner)
+	hpa := hpaForHibernateTest("api-hpa", workloadKindDeployment, "api", 2, 8)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(deploy, hpa).Build()
+	r := &ClusterHibernatePolicyReconciler{Client: c, Scheme: s}
+
+	got, err := r.hibernateWorkload(ctx, workloadRef{Namespace: testDefaultNamespace, Kind: workloadKindDeployment, Name: "api"}, greencostsv1alpha1.HibernateAction{MaxReplicas: &max}, owner)
+	if err != nil {
+		t.Fatalf("hibernateWorkload(already hibernated) error = %v", err)
+	}
+	if !got {
+		t.Fatalf("hibernateWorkload(already hibernated) = false, want true")
+	}
+
+	assertDeploymentReplicas(t, ctx, c, "api", 0)
+	assertHPAClamped(t, ctx, c, "api-hpa", max)
+	assertAPIHibernatedAnnotation(t, ctx, c, &appsv1.Deployment{}, owner)
+}
+
+//nolint:goconst // repeated missing name keeps table cases readable.
+func TestClusterHibernatePolicyReconcilerIgnoresMissingWorkloads(t *testing.T) {
+	ctx := context.Background()
+	s := newControllerTestScheme(t)
+	max := int32(1)
+	owner := hibernationOwner{Kind: controllerTestClusterHibernatePolicyKind, Name: testBusinessHoursPolicy}
+	c := fake.NewClientBuilder().WithScheme(s).Build()
+	r := &ClusterHibernatePolicyReconciler{Client: c, Scheme: s}
+
+	tests := []struct {
+		name string
+		ref  workloadRef
+	}{
+		{name: "deployment", ref: workloadRef{Namespace: testDefaultNamespace, Kind: workloadKindDeployment, Name: "missing"}},
+		{name: "statefulset", ref: workloadRef{Namespace: testDefaultNamespace, Kind: workloadKindStatefulSet, Name: "missing"}},
+		{name: "daemonset", ref: workloadRef{Namespace: testDefaultNamespace, Kind: workloadKindDaemonSet, Name: "missing"}},
+		{name: "replicaset", ref: workloadRef{Namespace: testDefaultNamespace, Kind: workloadKindReplicaSet, Name: "missing"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := r.hibernateWorkload(ctx, tt.ref, greencostsv1alpha1.HibernateAction{MaxReplicas: &max, SleepDaemonSet: true}, owner)
+			if err != nil {
+				t.Fatalf("hibernateWorkload() error = %v", err)
+			}
+			if got {
+				t.Fatalf("hibernateWorkload() = true, want false")
+			}
+			if err := r.wakeWorkload(ctx, tt.ref, owner); err != nil {
+				t.Fatalf("wakeWorkload() error = %v", err)
+			}
+		})
+	}
+}
+
+func TestClusterHibernatePolicyReconcilerWakesDaemonSetWithMalformedNodeSelectorAnnotation(t *testing.T) {
+	ctx := context.Background()
+	s := newControllerTestScheme(t)
+	owner := hibernationOwner{Kind: controllerTestClusterHibernatePolicyKind, Name: testBusinessHoursPolicy}
+	ds := daemonSetForHibernateTest(controllerTestDaemonSetName, map[string]string{hibernateNodeSelectorKey: hibernateNodeSelectorValue})
+	ds.Annotations = map[string]string{annotationOriginalNodeSelector: "not-json"}
+	markHibernated(ds.Annotations, owner)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(ds).Build()
+	r := &ClusterHibernatePolicyReconciler{Client: c, Scheme: s}
+
+	if err := r.wakeWorkload(ctx, workloadRef{Namespace: testDefaultNamespace, Kind: workloadKindDaemonSet, Name: controllerTestDaemonSetName}, owner); err != nil {
+		t.Fatalf("wakeWorkload() error = %v", err)
+	}
+
+	var got appsv1.DaemonSet
+	if err := c.Get(ctx, client.ObjectKey{Namespace: testDefaultNamespace, Name: controllerTestDaemonSetName}, &got); err != nil {
+		t.Fatalf("getting DaemonSet: %v", err)
+	}
+	if got.Spec.Template.Spec.NodeSelector != nil {
+		t.Fatalf("nodeSelector = %#v, want nil fallback", got.Spec.Template.Spec.NodeSelector)
+	}
+	if got.Annotations[annotationHibernated] != "" || got.Annotations[annotationOriginalNodeSelector] != "" {
+		t.Fatalf("wake left hibernation annotations: %#v", got.Annotations)
+	}
+}
+
 func deploymentForHibernateTest(name string, replicas int32, annotations map[string]string) *appsv1.Deployment {
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testDefaultNamespace, Annotations: annotations},
@@ -562,6 +648,7 @@ func weekdaySpec(day time.Weekday) greencostsv1alpha1.Weekday {
 	}
 }
 
+//nolint:unparam // fixed current callers, parameter keeps helper useful for focused HPA cases.
 func hpaForHibernateTest(name, targetKind, targetName string, minReplicas, maxReplicas int32) *autoscalingv2.HorizontalPodAutoscaler {
 	return &autoscalingv2.HorizontalPodAutoscaler{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testDefaultNamespace},

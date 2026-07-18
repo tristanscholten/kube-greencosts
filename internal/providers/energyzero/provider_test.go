@@ -39,6 +39,16 @@ func TestNewRequestBuildsQuarterHourElectricityURL(t *testing.T) {
 	}
 }
 
+func TestNewRequestReportsInvalidBaseURL(t *testing.T) {
+	p := New()
+	p.baseURL = "://bad-url"
+
+	_, err := p.newRequest(context.Background(), time.Now())
+	if err == nil || !strings.Contains(err.Error(), "parsing EnergyZero base URL") {
+		t.Fatalf("newRequest() error = %v, want base URL context", err)
+	}
+}
+
 func TestFetchPricesCallsPublicEndpointWithoutAuth(t *testing.T) {
 	var authHeader string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -119,6 +129,16 @@ func TestFactoryRejectsUnsupportedConfig(t *testing.T) {
 				t.Fatalf("Factory() error = %v, want substring %q", err, tt.wantErrSub)
 			}
 		})
+	}
+}
+
+func TestFactoryBuildsPublicProvider(t *testing.T) {
+	got, err := Factory()(greencostsv1alpha1.EnergyPriceSourceSpec{BiddingZone: "NL"}, "")
+	if err != nil {
+		t.Fatalf("Factory() error = %v", err)
+	}
+	if _, ok := got.(*Provider); !ok {
+		t.Fatalf("Factory() provider = %T, want *Provider", got)
 	}
 }
 
