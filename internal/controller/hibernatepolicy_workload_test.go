@@ -31,11 +31,11 @@ func TestHibernatePolicyReconcilerHibernatesAndWakesReplicaWorkloads(t *testing.
 	max := int32(1)
 	owner := hibernationOwner{Kind: controllerTestHibernatePolicyKind, Namespace: testDefaultNamespace, Name: testBusinessHoursPolicy}
 
-	deploy := deploymentForHibernateTest("api", 5, nil)
+	deploy := deploymentForHibernateTest(controllerTestDeploymentName, 5, nil)
 	stateful := statefulSetForHibernateTest("db", 4, nil)
 	replica := replicaSetForHibernateTest("worker", 3, nil, nil)
-	deploymentOwnedReplica := replicaSetForHibernateTest("api-rs", 7, nil, []metav1.OwnerReference{{Kind: workloadKindDeployment, Name: "api"}})
-	hpa := hpaForHibernateTest("api-hpa", workloadKindDeployment, "api", 2, 8)
+	deploymentOwnedReplica := replicaSetForHibernateTest("api-rs", 7, nil, []metav1.OwnerReference{{Kind: workloadKindDeployment, Name: controllerTestDeploymentName}})
+	hpa := hpaForHibernateTest("api-hpa", workloadKindDeployment, controllerTestDeploymentName, 2, 8)
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(deploy, stateful, replica, deploymentOwnedReplica, hpa).Build()
 	r := &HibernatePolicyReconciler{Client: c, Scheme: s}
 	action := greencostsv1alpha1.HibernateAction{MaxReplicas: &max}
@@ -45,8 +45,8 @@ func TestHibernatePolicyReconcilerHibernatesAndWakesReplicaWorkloads(t *testing.
 		kind greencostsv1alpha1.WorkloadType
 		want []string
 	}{
-		{name: "deployment", kind: greencostsv1alpha1.WorkloadTypeDeployment, want: []string{controllerTestDeploymentAPI}},
-		{name: "statefulset", kind: greencostsv1alpha1.WorkloadTypeStatefulSet, want: []string{"StatefulSet/db"}},
+		{name: controllerTestDeploymentCase, kind: greencostsv1alpha1.WorkloadTypeDeployment, want: []string{controllerTestDeploymentAPI}},
+		{name: controllerTestStatefulSetCase, kind: greencostsv1alpha1.WorkloadTypeStatefulSet, want: []string{"StatefulSet/db"}},
 		{name: "replicaset skips Deployment-owned siblings", kind: greencostsv1alpha1.WorkloadTypeReplicaSet, want: []string{"ReplicaSet/worker"}},
 	}
 
@@ -359,10 +359,10 @@ func TestClusterHibernatePolicyReconcilerHibernatesAndWakesReplicaWorkloads(t *t
 	s := newControllerTestScheme(t)
 	max := int32(1)
 	owner := hibernationOwner{Kind: controllerTestClusterHibernatePolicyKind, Name: testBusinessHoursPolicy}
-	deploy := deploymentForHibernateTest("api", 6, nil)
+	deploy := deploymentForHibernateTest(controllerTestDeploymentName, 6, nil)
 	stateful := statefulSetForHibernateTest("cache", 4, nil)
 	replica := replicaSetForHibernateTest("worker", 3, nil, nil)
-	hpa := hpaForHibernateTest("api-hpa", workloadKindDeployment, "api", 2, 8)
+	hpa := hpaForHibernateTest("api-hpa", workloadKindDeployment, controllerTestDeploymentName, 2, 8)
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(deploy, stateful, replica, hpa).Build()
 	r := &ClusterHibernatePolicyReconciler{Client: c, Scheme: s}
 	action := greencostsv1alpha1.HibernateAction{MaxReplicas: &max}
