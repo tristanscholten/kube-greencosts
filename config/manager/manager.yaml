@@ -43,7 +43,7 @@ spec:
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081
-        image: docker.io/tristanscholten/kube-greencosts-controller:latest
+        image: ghcr.io/tristanscholten/kube-greencosts-controller:latest
         imagePullPolicy: IfNotPresent
         name: manager
         ports: []
