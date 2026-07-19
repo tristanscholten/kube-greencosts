@@ -45,7 +45,7 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Prepare SemVer branch context
-        if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+        if: github.event_name == 'pull_request'
         id: semver-context
         shell: bash
         env:
@@ -90,7 +90,7 @@ jobs:
           git replace "${GITHUB_SHA}" "$semver_sha"
 
       - name: Calculate SemVer image tag
-        if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+        if: github.event_name == 'pull_request'
         id: semver
         uses: gandarez/semver-action@v2.2.0
         with:
@@ -108,10 +108,10 @@ jobs:
           RELEASE_VERSION: ${{ steps.release-version.outputs.version }}
           SEMVER_TAG: ${{ steps.semver.outputs.SEMVER_TAG || steps.semver.outputs.semver_tag }}
         run: |
-          if [[ -z "${SEMVER_TAG}" ]]; then
-            image_tag="v${RELEASE_VERSION}"
-          else
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" && -n "${SEMVER_TAG}" ]]; then
             image_tag="${SEMVER_TAG//+/-}"
+          else
+            image_tag="v${RELEASE_VERSION}"
           fi
 
           if [[ ! "$image_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
