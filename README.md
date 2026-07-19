@@ -692,7 +692,7 @@ make deploy
 
 Local image builds use [`VERSION`](VERSION) as the SemVer source of truth. By
 default `make docker-build` tags the image as
-`ghcr.io/tristanscholten/kube-greencosts-controller:v<version>` and `latest`.
+`ghcr.io/tristanscholten/kube-greencosts:v<version>` and `latest`.
 Override `IMAGE_REPOSITORY`, `IMG` or `IMAGE_TAGS` when publishing elsewhere.
 
 GitHub Actions run linting, unit/envtest suites, govulncheck vulnerability
@@ -711,13 +711,13 @@ KUBECONFIG=<local-k3s-config> \
 
 The container workflow in [`.github/workflows/container.yml`](.github/workflows/container.yml)
 builds every pull request and pushes GHCR images on `main`, `v*.*.*` tags
-and manual dispatches. It also pushes Docker Hub images when repository secrets
-`DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` are configured. Pull request and
-`main` builds calculate the image tag with `gandarez/semver-action`, using
-`VERSION` as the base version; release tag builds validate that the Git tag
-matches `VERSION`. Every build is scanned with Trivy and fails on unfixed high
-or critical OS/library vulnerabilities. Pushed images also include BuildKit SBOM
-and provenance attestations.
+and manual dispatches. Pull request and `main` builds calculate the image tag
+with `gandarez/semver-action`, using `VERSION` as the base version; release tag
+builds validate that the Git tag matches `VERSION`. Stable versions publish
+SemVer tags like `v1.0.0`, `v1.0`, and `v1`; `main` also publishes `latest`.
+Every build is scanned with Trivy and fails on unfixed high or critical
+OS/library vulnerabilities. Pushed images also include BuildKit SBOM and
+provenance attestations.
 
 For production installation, upgrade, rollback, alerting and failure-mode
 guidance, see the [operations runbook](docs/operations.md).

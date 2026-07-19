@@ -2,7 +2,7 @@ SHELL := /usr/bin/env bash
 
 VERSION_FILE ?= VERSION
 VERSION := $(shell tr -d '[:space:]' < $(VERSION_FILE))
-IMAGE_REPOSITORY ?= ghcr.io/tristanscholten/kube-greencosts-controller
+IMAGE_REPOSITORY ?= ghcr.io/tristanscholten/kube-greencosts
 IMG ?= $(IMAGE_REPOSITORY):v$(VERSION)
 IMAGE_TAGS ?= $(IMG) $(IMAGE_REPOSITORY):latest
 CONTAINER_TOOL ?= podman
