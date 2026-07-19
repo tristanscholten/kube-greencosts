@@ -29,8 +29,8 @@ Build or select an immutable controller image tag, then deploy the default
 overlay:
 
 ```bash
-make docker-build IMG=ghcr.io/tristanscholten/kube-greencosts-controller:vX.Y.Z
-make deploy IMG=ghcr.io/tristanscholten/kube-greencosts-controller:vX.Y.Z
+make docker-build IMG=ghcr.io/tristanscholten/kube-greencosts:vX.Y.Z
+make deploy IMG=ghcr.io/tristanscholten/kube-greencosts:vX.Y.Z
 ```
 
 Confirm rollout and webhook readiness:
@@ -55,7 +55,7 @@ Apply CRDs first, then roll the controller image:
 
 ```bash
 make install
-make deploy IMG=ghcr.io/tristanscholten/kube-greencosts-controller:vX.Y.Z
+make deploy IMG=ghcr.io/tristanscholten/kube-greencosts:vX.Y.Z
 kubectl -n kube-greencosts-system rollout status deploy/kube-greencosts-controller-manager
 ```
 
@@ -74,7 +74,7 @@ If only the controller image changed, roll back to the previous image:
 ```bash
 kubectl -n kube-greencosts-system set image \
   deploy/kube-greencosts-controller-manager \
-  manager=ghcr.io/tristanscholten/kube-greencosts-controller:vPREVIOUS
+  manager=ghcr.io/tristanscholten/kube-greencosts:vPREVIOUS
 kubectl -n kube-greencosts-system rollout status deploy/kube-greencosts-controller-manager
 ```
 
